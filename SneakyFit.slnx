@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SneakyFit.Domain/SneakyFit.Domain.csproj" />
+    <Project Path="src/SneakyFit.Application/SneakyFit.Application.csproj" />
+    <Project Path="src/SneakyFit.Infrastructure/SneakyFit.Infrastructure.csproj" />
+    <Project Path="src/SneakyFit.Desktop/SneakyFit.Desktop.csproj" />
+    <Project Path="src/SneakyFit.Updates/SneakyFit.Updates.csproj" />
+    <Project Path="src/SneakyFit.Backend/SneakyFit.Backend.csproj" />
+  </Folder>
+</Solution>
