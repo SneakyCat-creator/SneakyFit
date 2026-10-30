@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 namespace SneakyFit.Backend;
@@ -43,7 +44,7 @@ public sealed class OffCache
 public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent) : IExternalCatalog
 {
     private const int PageSize = 20;
-    private const string Fields = "code,product_name,product_name_ru,product_name_be,brands,nutriments,nutrition_data_per,nutrition,product_quantity_unit,serving_quantity_unit,last_modified_t";
+    private const string Fields = "code,product_name,product_name_ru,product_name_be,brands,nutriments,nutrition_data_per,nutrition,product_quantity_unit,quantity,serving_quantity,serving_quantity_unit,serving_size,last_modified_t";
     private readonly RequestBudget _searchBudget = new(10), _productBudget = new(15);
     private readonly ConcurrentDictionary<string, Lazy<Task<SearchResult>>> _searches = new();
     private readonly ConcurrentDictionary<string, Lazy<Task<ProductResult>>> _products = new();
@@ -51,7 +52,7 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
 
     public Task<SearchResult> Search(string query, int page, CancellationToken cancellationToken)
     {
-        var key = $"search:sal-v1:{query.ToLowerInvariant()}:{page}";
+        var key = $"search:units-v2:{query.ToLowerInvariant()}:{page}";
         var cached = cache.Read<SearchResult>(key); if (cached is not null) return Task.FromResult(cached);
         return Coalesce(_searches, key, async () =>
         {
@@ -72,7 +73,7 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
     }
     public async Task<CatalogProduct?> Barcode(string barcode, CancellationToken cancellationToken)
     {
-        var key = "barcode:" + barcode;
+        var key = "barcode:units-v2:" + barcode;
         if (cache.Read<ProductResult>(key) is { } cached) return cached.Product;
         var result = await Coalesce(_products, key, async () =>
         {
@@ -130,33 +131,113 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
             if (!product.TryGetProperty("brands", out var brands) || brands.ValueKind != JsonValueKind.Array) return Text(product, "brands");
             return string.Join(", ", brands.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.String).Take(8).Select(item => Plain(item.GetString(), 120)).Where(item => item is not null).Distinct(StringComparer.OrdinalIgnoreCase));
         }
-        static decimal? Number(JsonElement obj, string key, decimal max)
-        {
-            var text = Text(obj, key); return decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && value >= 0 && value <= max ? value : null;
-        }
         var barcode = Text(product, "code");
         if (barcode is null || barcode.Length is < 8 or > 14 || barcode.Any(c => !char.IsAsciiDigit(c))) return null;
         var name = Plain(Text(product, "product_name_ru"), 200) ?? Plain(Text(product, "product_name_be"), 200) ?? Plain(Text(product, "product_name"), 200);
         if (string.IsNullOrWhiteSpace(name)) name = "Продукт " + barcode;
-        var basis = "unknown"; decimal? calories = null, protein = null, fat = null, carbs = null;
-        if (product.TryGetProperty("nutrition", out var nutrition) && nutrition.ValueKind == JsonValueKind.Object && nutrition.TryGetProperty("aggregated_set", out var aggregated)
-            && Text(aggregated, "per") is "100g" or "100ml" && aggregated.TryGetProperty("nutrients", out var nutrients) && nutrients.ValueKind == JsonValueKind.Object)
+        var values = ReadNutrition(product);
+        return new("off:" + barcode, barcode, name.Trim(), Plain(Brands(product), 120), null, values.Calories, values.Protein, values.Fat, values.Carbs, values.Basis, "openfoodfacts",
+            "https://world.openfoodfacts.org/product/" + barcode, Text(product, "last_modified_t"))
+        { GramsPerMillilitre = ServingDensity(Text(product, "serving_size")) };
+    }
+
+    private sealed record NutritionValues(string Basis, decimal? Calories = null, decimal? Protein = null, decimal? Fat = null, decimal? Carbs = null)
+    {
+        public bool HasValues => Calories is not null || Protein is not null || Fat is not null || Carbs is not null;
+    }
+    private static string? Text(JsonElement element, string key) => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(key, out var value)
+        ? value.ValueKind == JsonValueKind.String ? value.GetString() : value.ValueKind == JsonValueKind.Number ? value.GetRawText() : null : null;
+    private static decimal? Number(JsonElement element, string key) => decimal.TryParse(Text(element, key), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && value >= 0 ? value : null;
+    private static (string Basis, decimal Scale)? Unit(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "g" or "г" => ("100g", 1), "kg" or "кг" => ("100g", 1000),
+        "ml" or "мл" => ("100ml", 1), "cl" => ("100ml", 10), "dl" => ("100ml", 100), "l" or "л" => ("100ml", 1000), _ => null
+    };
+    private static string? QuantityBasis(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length > 300) return null;
+        var matches = Regex.Matches(text, @"(?<![\p{L}\d])\d+(?:[.,]\d+)?\s*(kg|ml|cl|dl|g|l|кг|мл|г|л)(?!\p{L})", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(50));
+        var bases = matches.Select(match => Unit(match.Groups[1].Value)?.Basis).Where(b => b is not null).Distinct().ToArray();
+        return bases.Length == 1 ? bases[0] : null;
+    }
+    private static NutritionValues ReadNutrition(JsonElement product)
+    {
+        var packageBasis = Unit(Text(product, "product_quantity_unit"))?.Basis ?? QuantityBasis(Text(product, "quantity"));
+        if (product.TryGetProperty("nutrition", out var nutrition) && nutrition.ValueKind == JsonValueKind.Object)
         {
-            basis = Text(aggregated, "per")!;
-            decimal? Nutrient(string key, decimal max) => nutrients.TryGetProperty(key, out var nutrient) && Text(nutrient, "modifier") is null ? Number(nutrient, "value", max) : null;
-            calories = Nutrient("energy-kcal", 1500) ?? (Nutrient("energy-kj", 6276) / 4.184m); protein = Nutrient("proteins", 100); fat = Nutrient("fat", 100); carbs = Nutrient("carbohydrates", 100);
+            // OFF's aggregate prefers prepared food for Nutri-Score. A diary product is
+            // the item as sold: dry coffee and its diluted drink must never be mixed.
+            var sets = nutrition.TryGetProperty("input_sets", out var inputs) && inputs.ValueKind == JsonValueKind.Array
+                ? inputs.EnumerateArray().Where(set => Text(set, "preparation") is "as_sold" or null)
+                    .Select(set => (Source: SourcePriority(Text(set, "source")), Values: ReadSet(set, product)))
+                    .Where(set => set.Values is { HasValues: true }).OrderBy(set => set.Source)
+                    .ThenBy(set => set.Values!.Basis == packageBasis ? 0 : 1).ToArray() : [];
+            if (sets.Length > 0)
+            {
+                var chosen = sets[0].Values!;
+                foreach (var additional in sets.Skip(1).Select(set => set.Values!).Where(set => set.Basis == chosen.Basis))
+                    chosen = chosen with { Calories = chosen.Calories ?? additional.Calories, Protein = chosen.Protein ?? additional.Protein, Fat = chosen.Fat ?? additional.Fat, Carbs = chosen.Carbs ?? additional.Carbs };
+                return chosen;
+            }
+            if (nutrition.TryGetProperty("aggregated_set", out var aggregated) && Text(aggregated, "preparation") is "as_sold" or null && ReadSet(aggregated, product) is { HasValues: true } normalized)
+                return normalized;
         }
-        else if (product.TryGetProperty("nutriments", out var legacy))
+        if (!product.TryGetProperty("nutriments", out var legacy) || legacy.ValueKind != JsonValueKind.Object) return new("unknown");
+        var per = Text(product, "nutrition_data_per");
+        var servingBasis = Unit(Text(product, "serving_quantity_unit"))?.Basis ?? QuantityBasis(Text(product, "serving_size"));
+        // The legacy suffix *_100g covers both grams and millilitres. Resolve the
+        // declared liquid unit, not a fictitious gram-to-millilitre density of 1.
+        var basis = per == "100ml" ? "100ml" : packageBasis ?? (per == "serving" ? servingBasis : per == "100g" ? servingBasis ?? "100g" : "unknown");
+        decimal? Value(string key, decimal max) => Number(legacy, key) is { } value && value <= max ? value : null;
+        return new(basis ?? "unknown", Value("energy-kcal_100g", 1500) ?? Value("energy-kj_100g", 6276) / 4.184m,
+            Value("proteins_100g", 100), Value("fat_100g", 100), Value("carbohydrates_100g", 100));
+    }
+    private static int SourcePriority(string? source) => source switch { "manufacturer" => 0, "packaging" => 1, "usda" => 2, "estimate" => 3, _ => 4 };
+    private static NutritionValues? ReadSet(JsonElement set, JsonElement product)
+    {
+        if (set.ValueKind != JsonValueKind.Object || !set.TryGetProperty("nutrients", out var nutrients) || nutrients.ValueKind != JsonValueKind.Object) return null;
+        var per = Text(set, "per");
+        (string Basis, decimal Quantity) reference = per switch
         {
-            calories = Number(legacy, "energy-kcal_100g", 1500) ?? Number(legacy, "energy-kj_100g", 6276) / 4.184m;
-            protein = Number(legacy, "proteins_100g", 100); fat = Number(legacy, "fat_100g", 100); carbs = Number(legacy, "carbohydrates_100g", 100);
-            var per = Text(product, "nutrition_data_per");
-            var liquid = Text(product, "product_quantity_unit") is "ml" or "l" || Text(product, "serving_quantity_unit") is "ml" or "l";
-            // Legacy *_100g also represents 100 ml. Never infer density from packaging.
-            basis = per == "100ml" ? "100ml" : per == "100g" && !liquid ? "100g" : "unknown";
+            "100g" => ("100g", 100m), "100ml" => ("100ml", 100m),
+            "1kg" => ("100g", 1000m), "1l" => ("100ml", 1000m), _ => ("unknown", 0m)
+        };
+        if (per == "serving")
+        {
+            var unit = Unit(Text(set, "per_unit") ?? Text(product, "serving_quantity_unit"));
+            var quantity = Number(set, "per_quantity") ?? Number(product, "serving_quantity");
+            if (unit is { } u && quantity is > 0 and <= 100000) reference = (u.Basis, quantity.Value * u.Scale);
         }
-        return new("off:" + barcode, barcode, name.Trim(), Plain(Brands(product), 120), null, calories, protein, fat, carbs, basis, "openfoodfacts",
-            "https://world.openfoodfacts.org/product/" + barcode, Text(product, "last_modified_t"));
+        if (reference.Quantity <= 0) return null;
+        decimal? Nutrient(string key, decimal maximum, bool energy = false)
+        {
+            if (!nutrients.TryGetProperty(key, out var nutrient) || nutrient.ValueKind != JsonValueKind.Object || Text(nutrient, "modifier") is not (null or "" or "~" or "≈")) return null;
+            var raw = Number(nutrient, "value") ?? Number(nutrient, "value_computed");
+            if (raw is null) return null;
+            var unit = Text(nutrient, "unit")?.ToLowerInvariant();
+            decimal? factor = energy ? unit switch { "kj" => 1m / 4.184m, "kcal" => 1, null or "" => key == "energy-kj" ? 1m / 4.184m : 1, _ => null }
+                : unit switch { "g" or null or "" => 1, "mg" => .001m, "μg" or "µg" or "mcg" => .000001m, "kg" => 1000, _ => null };
+            if (factor is null) return null;
+            try { var value = raw.Value * factor.Value * 100 / reference.Quantity; return value <= maximum ? value : null; }
+            catch (OverflowException) { return null; }
+        }
+        return new(reference.Basis, Nutrient("energy-kcal", 1500, true) ?? Nutrient("energy-kj", 1500, true),
+            Nutrient("proteins", 100), Nutrient("fat", 100), Nutrient("carbohydrates", 100));
+    }
+    private static decimal? ServingDensity(string? serving)
+    {
+        if (string.IsNullOrWhiteSpace(serving) || serving.Length > 300) return null;
+        // Only an explicit equivalence for the same serving, e.g. "30 ml (27 g)".
+        // Package volume and nutrient ratios alone do not establish a density.
+        var pair = Regex.Match(serving, @"^\s*(?<a>\d+(?:[.,]\d+)?)\s*(?<au>kg|ml|cl|dl|g|l)\s*\(\s*(?<b>\d+(?:[.,]\d+)?)\s*(?<bu>kg|ml|cl|dl|g|l)\s*\)\s*$", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(50));
+        if (!pair.Success || Unit(pair.Groups["au"].Value) is not { } a || Unit(pair.Groups["bu"].Value) is not { } b || a.Basis == b.Basis) return null;
+        if (!decimal.TryParse(pair.Groups["a"].Value.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var first) ||
+            !decimal.TryParse(pair.Groups["b"].Value.Replace(',', '.'), NumberStyles.Number, CultureInfo.InvariantCulture, out var second)) return null;
+        if (first is <= 0 or > 100000 || second is <= 0 or > 100000) return null;
+        var grams = a.Basis == "100g" ? first * a.Scale : second * b.Scale;
+        var millilitres = a.Basis == "100ml" ? first * a.Scale : second * b.Scale;
+        var density = grams / millilitres;
+        return density is >= .01m and <= 25m ? density : null;
     }
     private sealed class RequestBudget(int limit)
     {

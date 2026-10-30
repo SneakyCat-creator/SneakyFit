@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.0',
+    [string]$Version = '1.1.0',
     [string]$SigningKey = $env:SNEAKYFIT_SIGNING_KEY,
     [string]$OutputDirectory
 )
@@ -30,7 +30,7 @@ try {
     if ([Convert]::ToBase64String($signer.ExportSubjectPublicKeyInfo()) -ne [Convert]::ToBase64String($verifier.ExportSubjectPublicKeyInfo())) {
         throw 'Ключ подписи не соответствует приложению.'
     }
-    & dotnet publish (Join-Path $projectRoot 'src/SneakyFit.Desktop/SneakyFit.Desktop.csproj') -c Release -r win-x64 --self-contained true -o $publishDirectory -p:Version=$Version -p:FileVersion=$fileVersion -p:AssemblyVersion=$fileVersion -p:DebugType=None -p:DebugSymbols=false -p:UseSharedCompilation=false -m:1 --nologo
+    & dotnet publish (Join-Path $projectRoot 'src/SneakyFit.Desktop/SneakyFit.Desktop.csproj') -c Release -r win-x64 --self-contained true -o $publishDirectory -p:SneakyFitPortable=true -p:Version=$Version -p:FileVersion=$fileVersion -p:AssemblyVersion=$fileVersion -p:DebugType=None -p:DebugSymbols=false -p:UseSharedCompilation=false -m:1 --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Сборка не завершена.' }
     $files = @(Get-ChildItem -LiteralPath $publishDirectory -File -Recurse)
     if ($files.Count -ne 1 -or $files[0].Name -ne 'SneakyFit.exe') { throw 'Публикация должна содержать только SneakyFit.exe.' }

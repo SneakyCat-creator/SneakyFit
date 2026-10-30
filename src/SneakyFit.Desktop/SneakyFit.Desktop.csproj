@@ -6,13 +6,13 @@
     <AssemblyName>SneakyFit</AssemblyName>
     <RootNamespace>SneakyFit.Desktop</RootNamespace>
     <Product>SneakyFit</Product>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets/SneakyFit.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PlatformTarget>x64</PlatformTarget>
-    <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
+    <PublishSingleFile Condition="'$(SneakyFitPortable)' == 'true'">true</PublishSingleFile>
+    <SelfContained Condition="'$(SneakyFitPortable)' != 'true'">false</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
@@ -22,6 +22,7 @@
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Controls.Text.UseAdornerForTextboxSelectionRendering" Value="false" />
     <PackageReference Include="ZXing.Net" Version="0.16.11" GeneratePathProperty="true" ExcludeAssets="runtime" />
     <EmbeddedResource Include="$(PkgZXing_Net)/lib/net9.0/zxing.dll" LogicalName="SneakyFit.Dependencies.zxing.dll" />
     <ProjectReference Include="../SneakyFit.Application/SneakyFit.Application.csproj" />

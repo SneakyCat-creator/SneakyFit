@@ -27,7 +27,7 @@ public partial class MainWindow
             BorderThickness = new Thickness(0),
             Padding = new Thickness(0),
             Height = Math.Clamp(ActualHeight - 280, 180, 420),
-            Style = null
+            Style = (Style)System.Windows.Application.Current.FindResource("FieldEditor")
         };
         Drawer("Лицензии", notices, width: 680);
     }

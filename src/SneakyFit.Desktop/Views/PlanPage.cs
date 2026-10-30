@@ -37,8 +37,8 @@ public partial class MainWindow
                 var entries = S(Between(T(meal.Name, SubheadingSize, Ink, true), T(meal.Time.ToString("HH:mm"), CaptionSize, "#65546F")));
                 foreach (var entry in meal.Entries)
                 {
-                    var food = _session.Data.Foods.FirstOrDefault(f => f.Id == entry.Food.SourceFoodId) ?? new Food(entry.Food.SourceFoodId, entry.Food.Name, "", entry.Food.Per100);
-                    var row = S(T(entry.Food.Name, BodySize, Ink, true), M(T(N(entry.Grams) + " г · " + N(entry.Nutrition.Calories) + " ккал" + (entry.Kind == EntryKind.Planned ? " · план" : " · съедено"), CaptionSize, "#65546F"), top: 4));
+                    var food = new Food(entry.Food.SourceFoodId, entry.Food.Name, "", entry.Food.Per100) { Unit = entry.Food.Unit, GramsPerMillilitre = entry.Food.GramsPerMillilitre };
+                    var row = S(T(entry.Food.Name, BodySize, Ink, true), M(T(N(entry.Grams, "0.##") + " " + FoodUnits.Symbol(entry.Food.Unit) + " · " + N(entry.Nutrition.Calories) + " ккал" + (entry.Kind == EntryKind.Planned ? " · план" : " · съедено"), CaptionSize, "#65546F"), top: 4));
                     var label = Surface(Between(row, Round("×", () => Safe(() => _session.RemoveEntry(date, entry.Id)), "#00FFFFFF", "#A08AA7")), "#A0FFFFFF", 11, 13);
                     if (entry.Kind == EntryKind.Planned) MakeDraggable(label, new PlanDrag(date, entry.Id, food, entry.Grams)); entries.Children.Add(M(label, top: 9));
                 }
@@ -63,7 +63,7 @@ public partial class MainWindow
         tile.Drop += (_, e) => Safe(() =>
         {
             var data = e.Data.GetData("SneakyFitFood");
-            if (data is Food food) _session.AddFoodToMeal(date, mealId, food, _lastPortions.GetValueOrDefault(food.Id, 100), date > DateOnly.FromDateTime(DateTime.Now) ? EntryKind.Planned : EntryKind.Eaten);
+            if (data is Food food) _session.AddFoodToMeal(date, mealId, food, _lastPortions.GetValueOrDefault((food.Id, food.Unit), food.Unit == FoodUnit.Millilitres ? 200 : 100), date > DateOnly.FromDateTime(DateTime.Now) ? EntryKind.Planned : EntryKind.Eaten);
             if (data is PlanDrag item) _session.MovePlannedEntry(item.Date, item.EntryId, date, mealId);
             e.Handled = true;
         });

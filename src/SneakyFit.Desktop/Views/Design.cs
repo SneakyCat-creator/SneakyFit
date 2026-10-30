@@ -49,7 +49,8 @@ internal static class D
         if (metric) input.SetResourceReference(FrameworkElement.StyleProperty, "MetricInput");
         return input;
     }
-    public static StackPanel Field(string name, UIElement input) => S(M(T(name, CaptionSize, "#655F72"), bottom: 5), M(input, bottom: 12));
+    public static StackPanel Field(string name, UIElement input, string color = "#655F72") =>
+    S(M(T(name, CaptionSize, color), bottom: 5), M(input, bottom: 12));
     public static ComboBox Select(IEnumerable<string> options, int selected = 0) { var box = new ComboBox(); foreach (var option in options) box.Items.Add(option); box.SelectedIndex = selected; return box; }
     public static Border Progress(decimal value, decimal total, string fill, string track = "#F2EBFA", double height = 8)
     {

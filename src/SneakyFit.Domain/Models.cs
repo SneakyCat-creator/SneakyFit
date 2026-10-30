@@ -6,11 +6,13 @@ public enum EntryKind { Planned, Eaten }
 public enum ActivityKind { Steps, Workout }
 public enum BodySide { None, Left, Right }
 public enum BiologicalSex { Unspecified, Female, Male }
+public enum FoodUnit { Grams, Millilitres }
 
 public readonly record struct Nutrition(decimal Calories, decimal Protein, decimal Fat, decimal Carbs)
 {
     public static Nutrition Zero => new(0, 0, 0, 0);
-    public Nutrition ForGrams(decimal grams) => new(Calories * grams / 100, Protein * grams / 100, Fat * grams / 100, Carbs * grams / 100);
+    public Nutrition ForAmount(decimal amount) => new(Calories * amount / 100, Protein * amount / 100, Fat * amount / 100, Carbs * amount / 100);
+    public Nutrition ForGrams(decimal grams) => ForAmount(grams);
     public static Nutrition operator +(Nutrition a, Nutrition b) => new(a.Calories + b.Calories, a.Protein + b.Protein, a.Fat + b.Fat, a.Carbs + b.Carbs);
 }
 
@@ -32,11 +34,17 @@ public sealed record TargetSnapshot(NutritionMode Mode, decimal Calories, MacroS
 public sealed record RecipeIngredient(FoodSnapshot Food, decimal Grams);
 public sealed record RecipeDefinition(List<RecipeIngredient> Ingredients, decimal RawWeight, decimal CookedWeight)
 {
-    public Nutrition Total => Ingredients.Aggregate(Nutrition.Zero, (sum, ingredient) => sum + ingredient.Food.Per100.ForGrams(ingredient.Grams));
-    public Nutrition Per100 => CookedWeight > 0 ? Total.ForGrams(10000 / CookedWeight) : Nutrition.Zero;
+    public FoodUnit Unit { get; init; } = FoodUnit.Grams;
+    // Each amount is expressed in its ingredient's own unit; only nutrients are added.
+    public Nutrition Total => Ingredients.Aggregate(Nutrition.Zero, (sum, ingredient) => sum + ingredient.Food.Per100.ForAmount(ingredient.Grams));
+    public Nutrition Per100 => CookedWeight > 0 ? Total.ForAmount(10000 / CookedWeight) : Nutrition.Zero;
 }
+public sealed record FoodServing(string Name, decimal Amount);
 public sealed record Food(Guid Id, string Name, string Category, Nutrition Per100, bool Favorite = false)
 {
+    public FoodUnit Unit { get; init; } = FoodUnit.Grams;
+    public decimal? GramsPerMillilitre { get; init; }
+    public List<FoodServing> Servings { get; init; } = [];
     public RecipeDefinition? Recipe { get; init; }
     public string? CatalogId { get; init; }
     public string? CatalogSource { get; init; }
@@ -46,10 +54,15 @@ public sealed record Food(Guid Id, string Name, string Category, Nutrition Per10
     public string? SourceUrl { get; init; }
     public string? CatalogRevision { get; init; }
 }
-public sealed record FoodSnapshot(Guid SourceFoodId, string Name, Nutrition Per100);
+public sealed record FoodSnapshot(Guid SourceFoodId, string Name, Nutrition Per100)
+{
+    public FoodUnit Unit { get; init; } = FoodUnit.Grams;
+    public decimal? GramsPerMillilitre { get; init; }
+}
 public sealed record FoodEntry(Guid Id, FoodSnapshot Food, decimal Grams, EntryKind Kind)
 {
-    public Nutrition Nutrition => Food.Per100.ForGrams(Grams);
+    // Grams is retained as the serialized amount field for existing profiles.
+    public Nutrition Nutrition => Food.Per100.ForAmount(Grams);
 }
 public sealed record MealTemplate(Guid Id, string Name, TimeOnly Time);
 public sealed record Meal(Guid Id, Guid TemplateId, string Name, TimeOnly Time, List<FoodEntry> Entries)
@@ -100,7 +113,7 @@ public sealed record Profile(Guid Id, string Name, decimal HeightCm, DateOnly Bi
 public sealed record Workspace(int SchemaVersion, bool IsDemo, Profile Profile, List<Food> Foods,
     List<DiaryDay> Days, List<WeightEntry> Weight, List<BodyMeasurement> Measurements)
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 }
 
 public sealed record BalanceLedger(decimal FoodReserve, decimal StepsCredit, decimal WorkoutsCredit, int ClosedDays)

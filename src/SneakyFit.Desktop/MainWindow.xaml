@@ -28,9 +28,9 @@
     <TextBlock x:Name="SettingsGlyph" FontFamily="Segoe Fluent Icons" Text="&#xE712;" FontSize="15" Foreground="#44394F"/>
   </Button>
   <Grid x:Name="DrawerOverlay" Visibility="Collapsed" Panel.ZIndex="20" Margin="3">
-    <Border Background="#6632264E" Margin="0,34,0,0" MouseLeftButtonDown="CloseOverlay"/>
-    <Border Background="#6632264E" Height="34" VerticalAlignment="Top" Margin="0,0,138,0" MouseLeftButtonDown="CloseOverlay" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
-    <Border x:Name="DrawerPanel" Background="#FEFDFF" CornerRadius="22" HorizontalAlignment="Center" VerticalAlignment="Top" Width="560" Padding="24" Margin="24,84,24,24">
+    <Border x:Name="DrawerShade" Background="#6632264E" Margin="0,34,0,0" MouseLeftButtonDown="BeginOverlayBack" MouseLeftButtonUp="EndOverlayBack" LostMouseCapture="CancelOverlayBack"/>
+    <Border x:Name="DrawerCaptionShade" Background="#6632264E" Height="34" VerticalAlignment="Top" Margin="0,0,138,0" MouseLeftButtonDown="BeginOverlayBack" MouseLeftButtonUp="EndOverlayBack" LostMouseCapture="CancelOverlayBack" shell:WindowChrome.IsHitTestVisibleInChrome="True"/>
+    <Border x:Name="DrawerPanel" Background="#FEFDFF" CornerRadius="22" HorizontalAlignment="Center" VerticalAlignment="Center" Width="560" Padding="24" Margin="24,84,24,24">
       <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid Margin="0,0,0,18"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>

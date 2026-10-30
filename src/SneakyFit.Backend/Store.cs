@@ -18,6 +18,7 @@ public sealed class Store
             PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, label TEXT NOT NULL, created_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS invites(hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL, used_at INTEGER);
+            CREATE TABLE IF NOT EXISTS friend_invites(hash TEXT PRIMARY KEY, invited_by TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL, used_at INTEGER);
             CREATE TABLE IF NOT EXISTS invite_requests(user_id TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS invite_requests_created ON invite_requests(created_at);
             CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, revoked_at INTEGER);
@@ -63,24 +64,38 @@ public sealed class Store
     }
     public string CreateInvite(string userId) => CreateInvite(userId, false);
     public string CreateDeviceInvite(string userId) => CreateInvite(userId, true);
+    public string CreateFriendInvite(string userId)
+    {
+        using var db = Open(); using var tx = db.BeginTransaction();
+        RequireUser(db, tx, userId); RecordInviteRequest(db, tx, userId);
+        var invite = Secret();
+        using var command = Command(db, "INSERT INTO friend_invites(hash,invited_by,expires_at) VALUES($hash,$user,$expiry)", tx,
+            ("$hash", Hash(invite)), ("$user", userId), ("$expiry", Now + 86400));
+        command.ExecuteNonQuery(); tx.Commit(); return invite;
+    }
     private string CreateInvite(string userId, bool limitDeviceRequests)
     {
         using var db = Open(); using var tx = db.BeginTransaction();
+        RequireUser(db, tx, userId);
+        if (limitDeviceRequests) RecordInviteRequest(db, tx, userId);
+        var invite = InsertInvite(db, tx, userId); tx.Commit(); return invite;
+    }
+    private static void RequireUser(SqliteConnection db, SqliteTransaction tx, string userId)
+    {
         using var exists = Command(db, "SELECT 1 FROM users WHERE id=$id", tx, ("$id", userId));
         if (exists.ExecuteScalar() is null) throw new ApiException(404, "Пользователь не найден.");
-        if (limitDeviceRequests)
+    }
+    private static void RecordInviteRequest(SqliteConnection db, SqliteTransaction tx, string userId)
+    {
+        var now = Now;
+        using var cleanup = Command(db, "DELETE FROM invite_requests WHERE created_at<=$cutoff", tx, ("$cutoff", now - 3600)); cleanup.ExecuteNonQuery();
+        using var recent = Command(db, "SELECT COUNT(*),MIN(created_at) FROM invite_requests WHERE user_id=$user", tx, ("$user", userId));
+        using (var reader = recent.ExecuteReader())
         {
-            var now = Now;
-            using var cleanup = Command(db, "DELETE FROM invite_requests WHERE created_at<=$cutoff", tx, ("$cutoff", now - 3600)); cleanup.ExecuteNonQuery();
-            using var recent = Command(db, "SELECT COUNT(*),MIN(created_at) FROM invite_requests WHERE user_id=$user", tx, ("$user", userId));
-            using (var reader = recent.ExecuteReader())
-            {
-                reader.Read();
-                if (reader.GetInt64(0) >= 3) throw new ApiException(429, "Повторите создание кода позже.", (int)Math.Max(1, reader.GetInt64(1) + 3600 - now));
-            }
-            using var record = Command(db, "INSERT INTO invite_requests(user_id,created_at) VALUES($user,$now)", tx, ("$user", userId), ("$now", now)); record.ExecuteNonQuery();
+            reader.Read();
+            if (reader.GetInt64(0) >= 3) throw new ApiException(429, "Повторите создание кода позже.", (int)Math.Max(1, reader.GetInt64(1) + 3600 - now));
         }
-        var invite = InsertInvite(db, tx, userId); tx.Commit(); return invite;
+        using var record = Command(db, "INSERT INTO invite_requests(user_id,created_at) VALUES($user,$now)", tx, ("$user", userId), ("$now", now)); record.ExecuteNonQuery();
     }
     private static string InsertInvite(SqliteConnection db, SqliteTransaction tx, string userId)
     {
@@ -92,11 +107,27 @@ public sealed class Store
         var name = FoodValidation.Text(request.DeviceName, "Устройство", 80, true);
         if (request.Invite is null || request.Invite.Length != 43) throw new ApiException(401, "Приглашение недействительно или уже использовано.");
         using var db = Open(); using var tx = db.BeginTransaction(); var hash = Hash(request.Invite);
-        using var query = Command(db, "SELECT user_id FROM invites WHERE hash=$hash AND used_at IS NULL AND expires_at>$now", tx, ("$hash", hash), ("$now", Now));
-        var userId = query.ExecuteScalar() as string;
-        if (userId is null) throw new ApiException(401, "Приглашение недействительно или уже использовано.");
-        using var consume = Command(db, "UPDATE invites SET used_at=$now WHERE hash=$hash AND used_at IS NULL", tx, ("$now", Now), ("$hash", hash));
+        using var query = Command(db, """
+            SELECT user_id,0 FROM invites WHERE hash=$hash AND used_at IS NULL AND expires_at>$now
+            UNION ALL
+            SELECT invited_by,1 FROM friend_invites WHERE hash=$hash AND used_at IS NULL AND expires_at>$now
+            """, tx, ("$hash", hash), ("$now", Now));
+        string userId; bool isFriend;
+        using (var reader = query.ExecuteReader())
+        {
+            if (!reader.Read()) throw new ApiException(401, "Приглашение недействительно или уже использовано.");
+            userId = reader.GetString(0); isFriend = reader.GetInt64(1) == 1;
+        }
+        var consumeSql = isFriend ? "UPDATE friend_invites SET used_at=$now WHERE hash=$hash AND used_at IS NULL"
+            : "UPDATE invites SET used_at=$now WHERE hash=$hash AND used_at IS NULL";
+        using var consume = Command(db, consumeSql, tx, ("$now", Now), ("$hash", hash));
         if (consume.ExecuteNonQuery() != 1) throw new ApiException(401, "Приглашение уже использовано.");
+        if (isFriend)
+        {
+            userId = Guid.NewGuid().ToString("N");
+            using var user = Command(db, "INSERT INTO users(id,label,created_at) VALUES($id,'SneakyFit',$now)", tx, ("$id", userId), ("$now", Now));
+            user.ExecuteNonQuery();
+        }
         var token = Secret();
         using var device = Command(db, "INSERT INTO devices(id,user_id,name,token_hash,created_at) VALUES($id,$user,$name,$hash,$now)", tx,
             ("$id", Guid.NewGuid().ToString("N")), ("$user", userId), ("$name", name), ("$hash", Hash(token)), ("$now", Now)); device.ExecuteNonQuery();

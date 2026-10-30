@@ -7,10 +7,14 @@ using System.Text.RegularExpressions;
 namespace SneakyFit.Backend;
 
 public sealed record CatalogProduct(string Id, string? Barcode, string Name, string? Brand, string? Preparation,
-    decimal? Calories, decimal? Protein, decimal? Fat, decimal? Carbs, string Basis, string Source, string? SourceUrl, string? Revision);
+    decimal? Calories, decimal? Protein, decimal? Fat, decimal? Carbs, string Basis, string Source, string? SourceUrl, string? Revision)
+{
+    public decimal? GramsPerMillilitre { get; init; }
+}
 public sealed record SearchResult(IReadOnlyList<CatalogProduct> Products, bool HasMore, string? Warning = null);
 public sealed record CustomFoodRequest(string Name, string? Brand, string? Preparation, string? Barcode,
-    [property: JsonRequired] decimal Calories, [property: JsonRequired] decimal Protein, [property: JsonRequired] decimal Fat, [property: JsonRequired] decimal Carbs);
+    [property: JsonRequired] decimal Calories, [property: JsonRequired] decimal Protein, [property: JsonRequired] decimal Fat, [property: JsonRequired] decimal Carbs,
+    string Basis = "100g");
 public sealed record CustomFoodResult(CatalogProduct Product, CatalogProduct Personal, bool Matched);
 public sealed record EnrollmentRequest(string Invite, string DeviceName);
 public sealed record EnrollmentResult(string Token, string UserId);
@@ -38,8 +42,13 @@ public static partial class FoodValidation
         var clean = Text(value, label, max); return clean.Length == 0 ? null : clean;
     }
     public static string Normalize(string value) => Text(value, "Название", 400).ToLowerInvariant().Replace('ё', 'е');
-    public static string IdentityKey(CatalogProduct product) => product.Barcode is { } barcode ? "barcode:" + CanonicalBarcode(barcode)
-        : JsonSerializer.Serialize(new[] { Normalize(product.Name), Normalize(product.Brand ?? ""), Normalize(product.Preparation ?? "") });
+    public static string IdentityKey(CatalogProduct product)
+    {
+        if (product.Barcode is { } barcode) return "barcode:" + CanonicalBarcode(barcode);
+        var identity = new[] { Normalize(product.Name), Normalize(product.Brand ?? ""), Normalize(product.Preparation ?? "") };
+        // Retain the original grams identity so existing records keep deduplicating after an upgrade.
+        return JsonSerializer.Serialize(product.Basis == "100g" ? identity : [.. identity, product.Basis]);
+    }
     public static string CanonicalBarcode(string value)
     {
         var barcode = value.Trim();
@@ -53,13 +62,15 @@ public static partial class FoodValidation
     }
     public static CatalogProduct Custom(CustomFoodRequest request)
     {
+        if (request.Basis is not ("100g" or "100ml")) throw new ApiException(400, "Выберите КБЖУ на 100 г или 100 мл.");
         var food = new CatalogProduct("", string.IsNullOrWhiteSpace(request.Barcode) ? null : CanonicalBarcode(request.Barcode),
             Text(request.Name, "Название", 200, true), Optional(request.Brand, "Марка", 120), Optional(request.Preparation, "Приготовление", 120),
-            request.Calories, request.Protein, request.Fat, request.Carbs, "100g", "community", null, null);
+            request.Calories, request.Protein, request.Fat, request.Carbs, request.Basis, "community", null, null);
         return Product(food, requireNutrition: true);
     }
     public static CatalogProduct Product(CatalogProduct food, bool requireNutrition = false)
     {
+        if (food.GramsPerMillilitre is < .01m or > 25m) throw new ApiException(400, "Проверьте вес 100 мл продукта.");
         if (food.Basis is not ("100g" or "100ml" or "unknown")) throw new ApiException(400, "Неизвестная единица пищевой ценности.");
         static void Nutrient(decimal? value, decimal maximum, bool required)
         {

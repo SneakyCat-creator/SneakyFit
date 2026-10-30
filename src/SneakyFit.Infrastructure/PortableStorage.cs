@@ -32,7 +32,7 @@ public sealed class JsonWorkspaceRepository(IAppPaths paths) : IWorkspaceReposit
         using var original = JsonDocument.Parse(File.ReadAllText(paths.ProfileFile));
         if (original.RootElement.GetProperty("SchemaVersion").GetInt32() < Workspace.CurrentSchemaVersion)
         {
-            var previous = paths.ProfileFile + ".before-v2.bak";
+            var previous = paths.ProfileFile + $".before-v{Workspace.CurrentSchemaVersion}.bak";
             if (!File.Exists(previous)) File.Copy(paths.ProfileFile, previous);
         }
         return data;
@@ -51,18 +51,22 @@ public sealed class JsonWorkspaceRepository(IAppPaths paths) : IWorkspaceReposit
             data.Profile.DefaultTarget is null || data.Profile.DefaultTarget.Split is null || !data.Profile.DefaultTarget.Split.IsValid ||
             data.Profile.DefaultTarget.Calories <= 0 || data.Profile.MealTemplates is null || data.Profile.MealTemplates.Count == 0 ||
             data.Profile.MealTemplates.Any(m => m is null || string.IsNullOrWhiteSpace(m.Name)) ||
-            data.Foods.Any(f => f is null || string.IsNullOrWhiteSpace(f.Name) || f.Per100.Calories < 0 || f.Per100.Protein < 0 || f.Per100.Fat < 0 || f.Per100.Carbs < 0) ||
+            data.Foods.Any(f => f is null || string.IsNullOrWhiteSpace(f.Name) || !Enum.IsDefined(f.Unit) || !FoodUnits.IsValidDensity(f.GramsPerMillilitre) || !FoodUnits.AreValidServings(f.Servings) ||
+                f.Per100.Calories < 0 || f.Per100.Protein < 0 || f.Per100.Fat < 0 || f.Per100.Carbs < 0) ||
             data.Days.Any(d => d is null || d.Target is null || d.Target.Split is null || !d.Target.Split.IsValid || d.Target.Calories <= 0 || d.Target.ActivityCreditPercent < 0 || d.Target.ActivityCreditPercent > 100 || d.Meals is null || d.Activities is null ||
                 d.Activities.Any(a => a is null || a.Steps < 0 || a.Minutes < 0 || a.EstimatedCalories < 0) ||
                 d.ActivityGoal is { IsValid: false } ||
-                d.Meals.Any(m => m is null || m.Entries is null || m.Entries.Any(e => e is null || e.Food is null || e.Grams <= 0))))
+                d.Meals.Any(m => m is null || m.Entries is null || m.Entries.Any(e => e is null || e.Food is null || !Enum.IsDefined(e.Food.Unit) || !FoodUnits.IsValidDensity(e.Food.GramsPerMillilitre) ||
+                    e.Grams <= 0 || e.Grams > 10000 || !Enum.IsDefined(e.Kind) || !ValidNutrition(e.Food.Per100)))))
             throw new InvalidDataException("В файле профиля отсутствуют обязательные данные или есть некорректные значения.");
         if (data.Days.GroupBy(d => d.Date).Any(g => g.Count() > 1) ||
             data.Weight.Any(w => w is null || w.Kilograms <= 0 || w.Kilograms > 500) ||
             data.Measurements.Any(m => m is null || m.Value <= 0 || m.Value > 500 || !MeasurementCatalog.All.Any(def => def.Key == m.Key)))
             throw new InvalidDataException("Проверьте даты дневника, вес и измерения в файле профиля.");
         if (data.Profile.GoalWeightKg is <= 0 or > 500 || data.Profile.StepsCaloriesPer1000 is < 0 or > 300 ||
-            data.Foods.Any(f => f.Recipe is { } r && (r.Ingredients is null || r.Ingredients.Count == 0 || r.CookedWeight <= 0 || r.RawWeight <= 0 || r.Ingredients.Any(i => i is null || i.Food is null || i.Grams <= 0))))
+            data.Foods.Any(f => f.Recipe is { } r && (!Enum.IsDefined(r.Unit) || r.Unit != f.Unit || r.Ingredients is null || r.Ingredients.Count == 0 ||
+                r.CookedWeight <= 0 || r.CookedWeight > 100000 || r.RawWeight < 0 || r.RawWeight > 100000 || r.Unit == FoodUnit.Grams && r.RawWeight == 0 ||
+                r.Ingredients.Any(i => i is null || i.Food is null || !Enum.IsDefined(i.Food.Unit) || !FoodUnits.IsValidDensity(i.Food.GramsPerMillilitre) || i.Grams <= 0 || i.Grams > 100000 || !ValidNutrition(i.Food.Per100)))))
             throw new InvalidDataException("Проверьте цель веса и состав блюд.");
         var advisor = data.Profile.Advisor ?? new AdvisorPreferences();
         advisor = advisor with
@@ -74,6 +78,8 @@ public sealed class JsonWorkspaceRepository(IAppPaths paths) : IWorkspaceReposit
         return data with { SchemaVersion = Workspace.CurrentSchemaVersion, Profile = data.Profile with { Advisor = advisor },
             Foods = data.Foods.Select(f => f.Recipe is { } r ? f with { Per100 = r.Per100 } : f).ToList() };
     }
+
+    private static bool ValidNutrition(Nutrition value) => value.Calories >= 0 && value.Protein >= 0 && value.Fat >= 0 && value.Carbs >= 0;
 
     private static void WriteAtomic(string destination, Workspace data, bool backup)
     {

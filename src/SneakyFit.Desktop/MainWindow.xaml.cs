@@ -32,7 +32,7 @@ public partial class MainWindow : Window
     private Action<string>? _selectMenuTab;
     private Food? _selectedFood;
     private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(3) };
-    private readonly Dictionary<Guid, decimal> _lastPortions = [];
+    private readonly Dictionary<(Guid FoodId, FoodUnit Unit), decimal> _lastPortions = [];
     private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
     public MainWindow(WorkspaceSession session, IAppPaths paths)
     {
@@ -42,7 +42,10 @@ public partial class MainWindow : Window
         Width = Math.Min(Width, SystemParameters.WorkArea.Width - 28); Height = Math.Min(Height, SystemParameters.WorkArea.Height - 28); MinWidth = Math.Min(MinWidth, Width); MinHeight = Math.Min(MinHeight, Height);
         _session.Changed += SessionChanged;
         _toastTimer.Tick += (_, _) => { Toast.Visibility = Visibility.Collapsed; _toastTimer.Stop(); };
-        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) { if (DrawerOverlay.Visibility == Visibility.Visible) BackDrawer(); else if (_page == "profile") Navigate("diary"); else Companion.Collapse(); e.Handled = true; } if (e.Key == Key.K && Keyboard.Modifiers == ModifierKeys.Control) { Navigate("foods"); e.Handled = true; } };
+        PreviewKeyDown += HandleWindowKey;
+        PreviewMouseDown += GuardOverlayClickSeries;
+        PreviewMouseUp += FinishOverlayClickSeries;
+        Deactivated += (_, _) => ResetOverlayPointer();
         SourceInitialized += (_, _) => NativeFrame.Apply(this);
         SizeChanged += (_, _) =>
         {
@@ -102,7 +105,21 @@ public partial class MainWindow : Window
         PageHost.Margin = _page == "diary" ? new Thickness(26, 12, 26, 20) : new Thickness(30, 12, 30, 85);
         PageHost.Content = _page == "profile" ? ProfilePage() : DiaryPage();
     }
-    private void CloseOverlay(object sender, MouseButtonEventArgs e) { BackDrawer(); e.Handled = true; }
+    private void HandleWindowKey(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            if (DrawerOverlay.Visibility == Visibility.Visible) BackDrawer();
+            else if (_page == "profile") Navigate("diary");
+            else Companion.Collapse();
+        }
+        else if (e.Key == Key.K && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            if (DrawerOverlay.Visibility != Visibility.Visible) Navigate("foods");
+        }
+    }
     private void CloseDrawerClick(object sender, RoutedEventArgs e) => BackDrawer();
     private UIElement Tabs(IEnumerable<string> options, string selected, Action<string> change)
     {

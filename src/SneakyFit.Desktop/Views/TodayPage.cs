@@ -27,7 +27,8 @@ public partial class MainWindow
         activityText.HorizontalAlignment = HorizontalAlignment.Center; activityText.VerticalAlignment = VerticalAlignment.Center;
         foreach (TextBlock text in activityText.Children) text.TextAlignment = TextAlignment.Center;
         activity.Children.Add(activityText);
-        var indexButton = Btn("", ActivityDrawer, "#00FFFFFF"); indexButton.Padding = new Thickness(0); indexButton.Content = activity; indexButton.IsEnabled = !future;
+        var indexButton = new CircularActionButton { Content = activity, IsEnabled = !future };
+        indexButton.Click += (_, _) => ActivityDrawer();
         System.Windows.Automation.AutomationProperties.SetName(indexButton, "Индекс активности " + (index is null ? "нет данных" : index.Percent + "%"));
         var circles = H(indexButton, M(ring, left: 12)); circles.VerticalAlignment = VerticalAlignment.Center;
         var energy = new Grid(); energy.ColumnDefinitions.Add(new() { Width = new GridLength(1.05, GridUnitType.Star) }); energy.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); energy.ColumnDefinitions.Add(new() { Width = new GridLength(1.65, GridUnitType.Star) });
@@ -78,7 +79,7 @@ public partial class MainWindow
         var entries = S(); var entryScroll = new ScrollViewer { Content = entries, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Margin = new Thickness(0, 12, 0, 0), PanningMode = PanningMode.VerticalOnly }; Grid.SetRow(entryScroll, 1); content.Children.Add(entryScroll);
         foreach (var entry in meal.Entries)
         {
-            var row = S(T(entry.Food.Name, BodySize, Ink, true), M(T(N(entry.Grams) + " г · " + N(entry.Nutrition.Calories) + " ккал" + (entry.Kind == EntryKind.Planned ? " · план" : ""), CaptionSize, "#65546F"), top: 4));
+            var row = S(T(entry.Food.Name, BodySize, Ink, true), M(T(N(entry.Grams, "0.##") + " " + FoodUnits.Symbol(entry.Food.Unit) + " · " + N(entry.Nutrition.Calories) + " ккал" + (entry.Kind == EntryKind.Planned ? " · план" : ""), CaptionSize, "#65546F"), top: 4));
             entries.Children.Add(M(row, top: 4, bottom: 9));
         }
         var bottom = S(); Grid.SetRow(bottom, 2); content.Children.Add(bottom);
@@ -87,8 +88,14 @@ public partial class MainWindow
         var surface = Surface(content, colors[index % colors.Length], 20, 24); surface.Cursor = System.Windows.Input.Cursors.Hand;
         GiveDepth(surface, 12, .13);
         AllowMealDrop(surface, day.Date, meal.TemplateId);
-        surface.MouseLeftButtonUp += (_, e) => { if (e.OriginalSource is not Button && !IsInsideButton(e.OriginalSource as DependencyObject)) MealDrawer(day.Date, meal.TemplateId); };
+        surface.MouseLeftButtonUp += (_, e) =>
+        {
+            if (e.OriginalSource is Button || IsInsideButton(e.OriginalSource as DependencyObject)) return;
+            if (meal.Entries.Count == 0) FoodDrawer(meal.TemplateId, day.Date);
+            else MealDrawer(day.Date, meal.TemplateId);
+        };
         return surface;
     }
+
     private static bool IsInsideButton(DependencyObject? source) { while (source is not null) { if (source is Button) return true; source = source is System.Windows.Media.Visual ? VisualTreeHelper.GetParent(source) : null; } return false; }
 }

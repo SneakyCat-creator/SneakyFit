@@ -179,7 +179,7 @@ public sealed class FitCoach : Grid
 
     private void OnTickle(string reaction)
     {
-        if (_phase == Phase.Checking) return;
+        if (_phase is Phase.Checking or Phase.Farewell) return;
         if (_phase is Phase.Idle or Phase.Chatter) { _transient.Stop(); _phase = Phase.Chatter; _items.Clear(); _tasks.Children.Clear(); _separator.Visibility = Visibility.Collapsed; }
         SetMessage(reaction); ShowCard(); _tickle.Stop(); _tickle.Start();
     }
@@ -244,15 +244,21 @@ public sealed class FitCoach : Grid
 
     private void Close()
     {
+        // Once dismissal starts, repeated clicks and late image-change callbacks
+        // must not return to the warning or reopen the checklist.
+        if (_phase == Phase.Farewell || !_visible) return;
         if (_items.Any(i => !i.Done) && !_warned)
         {
             _warned = true; _tickle.Stop(); Say("Ещё есть незаполненные записи. Отложим? Нажми × ещё раз."); return;
         }
         if (_phase is Phase.Insight or Phase.Completion) { FinishTransient(); return; }
         if (_items.Count == 0) { _transient.Stop(); _tickle.Stop(); _phase = Phase.Idle; HideCard(); _cat.SetMood(CatMood.Idle); return; }
-        _transient.Stop(); _tickle.Stop(); _phase = Phase.Farewell; _warned = false; Dismissed?.Invoke();
-        _cat.SetMood(CatMood.Idle); Say("Договорились. Я рядом, если понадоблюсь."); ShowCard();
-        _transient.Interval = TimeSpan.FromSeconds(1.8); _transient.Start();
+        _transient.Stop(); _tickle.Stop(); _phase = Phase.Farewell; Dismissed?.Invoke();
+        _cat.SetMood(CatMood.Idle); Say("Договорились. Я рядом, если понадоблюсь.");
+        HideCard(() =>
+        {
+            _items.Clear(); _tasks.Children.Clear(); _warned = false; _phase = Phase.Idle;
+        });
     }
 
     private void ArrangeChecklist()

@@ -11,7 +11,7 @@ public partial class MainWindow
     private UIElement ProgressSection(string section, Action redraw)
     {
         var add = Primary(section == "Параметры" ? "+  Замер" : "+  Вес", () => MeasurementDrawer(section == "Параметры")); add.Visibility = section is "Вес" or "Параметры" ? Visibility.Visible : Visibility.Collapsed;
-        var root = S(M(Between(T(section, HeadingSize, Ink, true), add), bottom: 18));
+        var root = S(M(Between(H(T(section, HeadingSize, Ink, true), M(ProgressShareButton(section), left: 16)), add), bottom: 18));
         var chartPeriod = _chartPeriods.GetValueOrDefault(section, 14);
         var today = DateOnly.FromDateTime(DateTime.Now); var start = chartPeriod == 0 ? DateOnly.MinValue : today.AddDays(-chartPeriod + 1);
         var period = Select(["Неделя", "2 недели", "Месяц", "За всё время"], chartPeriod == 7 ? 0 : chartPeriod == 14 ? 1 : chartPeriod == 30 ? 2 : 3);

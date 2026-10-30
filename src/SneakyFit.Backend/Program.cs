@@ -119,9 +119,10 @@ static string? Operation(HttpContext context)
     if (key.Length > 80 || key.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))) throw new ApiException(400, "Некорректный ключ операции.");
     return key;
 }
-app.MapGet("/healthz", () => new { status = "ok" });
+app.MapGet("/healthz", () => new { status = "ok", customFoodBasis = true, foodUnits = new[] { "100g", "100ml" } });
 app.MapPost("/api/devices/enroll", (EnrollmentRequest request, Store db) => db.Enroll(request)).AllowAnonymous().RequireRateLimiting("enrollment");
 app.MapPost("/api/devices/invite", (HttpContext context, Store db) => new { invite = db.CreateDeviceInvite(User(context)), expiresInSeconds = 86400 });
+app.MapPost("/api/users/invite", (HttpContext context, Store db) => new { invite = db.CreateFriendInvite(User(context)), expiresInSeconds = 86400 });
 app.MapGet("/api/catalog/search", async (string? q, int? page, IExternalCatalog off, Store db, CancellationToken cancellation) =>
 {
     var query = FoodValidation.Text(q, "Поиск", 120, true); var number = page ?? 1;

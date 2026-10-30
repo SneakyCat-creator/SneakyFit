@@ -50,18 +50,18 @@ public partial class MainWindow
                 var client = new CatalogClient(profileId); var response = await client.Personal(CancellationToken.None);
                 EnsureCatalogProfile(profileId);
                 _session.MergeCatalogFoods(response.Products); Notify("Мои продукты обновлены ✓");
-            }), M(Btn("Подключить другое устройство", DeviceInvitationDrawer), top: 10));
+            }), M(Btn("Пригласить пользователя", FriendInvitationDrawer), top: 10));
         }
         Draw(); return host;
     }
-    private void DeviceInvitationDrawer()
+    private void FriendInvitationDrawer()
     {
         var profileId = _session.Data.Profile.Id; var lifetime = new CancellationTokenSource();
         var body = S();
-        Drawer("Другое устройство", body, CatalogAction("Получить код", async () =>
+        Drawer("Пригласить пользователя", body, CatalogAction("Получить код", async () =>
         {
             EnsureCatalogProfile(profileId);
-            var invitation = await new CatalogClient(profileId).Invite(lifetime.Token);
+            var invitation = await new CatalogClient(profileId).InviteFriend(lifetime.Token);
             EnsureCatalogProfile(profileId); lifetime.Token.ThrowIfCancellationRequested();
             var code = Input(invitation.Invite); code.IsReadOnly = true;
             code.TextWrapping = TextWrapping.Wrap;
@@ -199,28 +199,67 @@ public partial class MainWindow
         EnsureCatalogProfile(profileId); cancellation.ThrowIfCancellationRequested();
         selected(_session.SaveCatalogFood(saved));
     }
-    private void CatalogProductEditor(CatalogProduct product, Action<Food> selected, string? expectedRevision = null)
+    private void CatalogProductEditor(CatalogProduct product, Action<Food> selected, string? expectedRevision = null, Food? localFood = null)
     {
         var profileId = _session.Data.Profile.Id; var lifetime = new CancellationTokenSource();
-        var massBasis = product.Basis == "100g";
+        var basis = Select(["На 100 г", "На 100 мл"], product.Basis == "100g" ? 0 : product.Basis == "100ml" ? 1 : -1);
         var name = Input(product.Name);
-        var calories = Input(massBasis && product.Calories is { } k ? N(k, "0.##") : "");
-        var protein = Input(massBasis && product.Protein is { } p ? N(p, "0.##") : "");
-        var fat = Input(massBasis && product.Fat is { } f ? N(f, "0.##") : "");
-        var carbs = Input(massBasis && product.Carbs is { } c ? N(c, "0.##") : "");
-        var body = S(Field("Название", name), M(Tag("Моя версия · на 100 г"), bottom: 16));
-        if (product.Basis == "100ml")
+        var calories = Input(product.Calories is { } k ? N(k, "0.##") : "");
+        var protein = Input(product.Protein is { } p ? N(p, "0.##") : "");
+        var fat = Input(product.Fat is { } f ? N(f, "0.##") : "");
+        var carbs = Input(product.Carbs is { } c ? N(c, "0.##") : "");
+        var previousBasis = basis.SelectedIndex;
+        var sourceHint = T("", CaptionSize, Muted);
+        void FillNutrition(CatalogProduct value)
         {
-            static string Value(decimal? value) => value is { } number ? N(number, "0.#") : "—";
-            body.Children.Add(M(T($"На 100 мл: {Value(product.Calories)} ккал · Б {Value(product.Protein)} · Ж {Value(product.Fat)} · У {Value(product.Carbs)}", BodySize, Ink), bottom: 12));
+            if (value.Calories is { } k) calories.Text = N(k, "0.##");
+            if (value.Protein is { } p) protein.Text = N(p, "0.##");
+            if (value.Fat is { } f) fat.Text = N(f, "0.##");
+            if (value.Carbs is { } c) carbs.Text = N(c, "0.##");
         }
-        if (!massBasis) body.Children.Add(M(T(product.Basis == "100ml" ? "В каталоге значения на 100 мл. Укажите КБЖУ на 100 г." : "Укажите КБЖУ на 100 г.", BodySize, Ink), bottom: 16));
-        body.Children.Add(Pair(Field("Ккал", calories), Field("Белки, г", protein))); body.Children.Add(Pair(Field("Жиры, г", fat), Field("Углеводы, г", carbs)));
+        basis.SelectionChanged += (_, _) =>
+        {
+            if (previousBasis >= 0 && basis.SelectedIndex != previousBasis)
+            {
+                if (product.GramsPerMillilitre is { } density)
+                {
+                    var from = previousBasis == 1 ? FoodUnit.Millilitres : FoodUnit.Grams;
+                    var to = basis.SelectedIndex == 1 ? FoodUnit.Millilitres : FoodUnit.Grams;
+                    foreach (var input in new[] { calories, protein, fat, carbs })
+                        if (decimal.TryParse(input.Text.Replace(',', '.'), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var number))
+                            input.Text = N(number * FoodUnits.ConvertAmount(100, to, from, density) / 100, "0.###");
+                    sourceHint.Text = "";
+                }
+                else sourceHint.Text = "КБЖУ сохранены. Единица — как на упаковке.";
+            }
+            previousBasis = basis.SelectedIndex;
+        };
+        var body = S(Field("Название", name), Field("Пищевая ценность", basis));
+        body.Children.Add(sourceHint);
+        if (product.Source == "openfoodfacts" && product.Barcode is { } barcode)
+            body.Children.Add(M(CatalogAction("КБЖУ из каталога", async () =>
+            {
+                var fresh = await new CatalogClient(profileId).Barcode(barcode, lifetime.Token);
+                EnsureCatalogProfile(profileId); lifetime.Token.ThrowIfCancellationRequested();
+                if (fresh.Basis is not ("100g" or "100ml")) throw new ArgumentException("В каталоге не указана единица. Выберите её по упаковке.");
+                previousBasis = fresh.Basis == "100ml" ? 1 : 0;
+                product = product with { GramsPerMillilitre = fresh.GramsPerMillilitre };
+                basis.SelectedIndex = previousBasis; FillNutrition(fresh);
+                sourceHint.Text = "Из Open Food Facts";
+            }), bottom: 10));
+        body.Children.Add(Pair(Field("Ккал", calories), MacroField("Белки, г", protein))); body.Children.Add(Pair(MacroField("Жиры, г", fat), MacroField("Углеводы, г", carbs)));
         Drawer("Моя версия продукта", body, CatalogAction("Сохранить", async () =>
         {
             if (string.IsNullOrWhiteSpace(name.Text)) throw new ArgumentException("Введите название.");
-            var changed = product with { Name = name.Text.Trim(), Calories = Num(calories, "Ккал", 0, 1000), Protein = Num(protein, "Белки", 0, 100), Fat = Num(fat, "Жиры", 0, 100), Carbs = Num(carbs, "Углеводы", 0, 100), Basis = "100g" };
+            if (basis.SelectedIndex < 0) throw new ArgumentException("Выберите: на 100 г или на 100 мл.");
+            var changed = product with { Name = name.Text.Trim(), Calories = Num(calories, "Ккал", 0, 1000), Protein = MacroValue(protein, "Белки"), Fat = MacroValue(fat, "Жиры"), Carbs = MacroValue(carbs, "Углеводы"), Basis = basis.SelectedIndex == 1 ? "100ml" : "100g" };
             EnsureCatalogProfile(profileId);
+            if (localFood is not null)
+            {
+                var unit = FoodUnits.FromBasis(changed.Basis);
+                var updated = localFood with { Name = changed.Name, Unit = unit, Per100 = new(changed.Calories.Value, changed.Protein.Value, changed.Fat.Value, changed.Carbs.Value), GramsPerMillilitre = changed.GramsPerMillilitre, Servings = localFood.Unit == unit ? localFood.Servings : [] };
+                _session.SaveFood(updated); BackDrawer(); selected(updated); Notify("Моя версия сохранена ✓"); return;
+            }
             var client = new CatalogClient(profileId);
             var saved = client.IsConnected ? await client.SavePersonal(changed, lifetime.Token, expectedRevision) : changed with { Revision = null };
             EnsureCatalogProfile(profileId); lifetime.Token.ThrowIfCancellationRequested();
@@ -236,18 +275,35 @@ public partial class MainWindow
     private void NewSharedFoodDrawer(Action<Food>? selected = null)
     {
         var profileId = _session.Data.Profile.Id; var lifetime = new CancellationTokenSource();
-        if (!new CatalogClient(profileId).IsConnected) { EnrollmentDrawer(() => NewSharedFoodDrawer(selected)); return; }
         CustomFoodRequest? lastRequest = null; var operationId = Guid.NewGuid();
         var name = Input(); var brand = Input(); var preparation = Input(); var barcode = Input(); var calories = Input(); var protein = Input(); var fat = Input(); var carbs = Input();
+        var basis = Select(["На 100 г", "На 100 мл"]);
         var extra = new Expander { Header = "Марка, приготовление, штрихкод", Margin = new Thickness(0, 0, 0, 16), Content = M(S(Field("Марка", brand), Field("Приготовление", preparation), Field("Штрихкод", barcode)), top: 12) };
-        Drawer("Своё блюдо", S(M(Btn("Собрать из ингредиентов", () => RecipeDrawer()), bottom: 16), Field("Название", name), extra, M(Tag("На 100 г"), bottom: 16), Field("Ккал", calories), Field("Белки, г", protein), Pair(Field("Жиры, г", fat), Field("Углеводы, г", carbs))), CatalogAction("Сохранить блюдо", async () =>
+        Drawer("Своё блюдо", S(M(Btn("Собрать из ингредиентов", () => RecipeDrawer()), bottom: 16), Field("Название", name), extra, Field("Пищевая ценность", basis), Pair(Field("Ккал", calories), MacroField("Белки, г", protein)), Pair(MacroField("Жиры, г", fat), MacroField("Углеводы, г", carbs))), CatalogAction("Сохранить блюдо", async () =>
         {
             if (string.IsNullOrWhiteSpace(name.Text)) throw new ArgumentException("Введите название.");
             static string? Optional(TextBox box) => string.IsNullOrWhiteSpace(box.Text) ? null : box.Text.Trim();
-            var request = new CustomFoodRequest(name.Text.Trim(), Optional(brand), Optional(preparation), Optional(barcode), Num(calories, "Ккал", 0, 1000), Num(protein, "Белки", 0, 100), Num(fat, "Жиры", 0, 100), Num(carbs, "Углеводы", 0, 100));
+            var request = new CustomFoodRequest(name.Text.Trim(), Optional(brand), Optional(preparation), Optional(barcode), Num(calories, "Ккал", 0, 1000), MacroValue(protein, "Белки"), MacroValue(fat, "Жиры"), MacroValue(carbs, "Углеводы"), basis.SelectedIndex == 1 ? "100ml" : "100g");
             if (lastRequest != request) { operationId = Guid.NewGuid(); lastRequest = request; }
             EnsureCatalogProfile(profileId);
-            var result = await new CatalogClient(profileId).Create(request, operationId, lifetime.Token);
+            var client = new CatalogClient(profileId);
+            // v1.0 servers ignore an unknown JSON field. Never let an ml product become a gram product there.
+            var localOnly = !client.IsConnected || request.Basis == "100ml" && !await client.SupportsDrinkCreation(lifetime.Token);
+            EnsureCatalogProfile(profileId); lifetime.Token.ThrowIfCancellationRequested();
+            if (localOnly)
+            {
+                var unit = FoodUnits.FromBasis(request.Basis);
+                var prior = _session.Data.Foods.FirstOrDefault(f => f.CatalogId is null && f.Recipe is null && f.Unit == unit &&
+                    string.Equals(f.Name, request.Name, StringComparison.CurrentCultureIgnoreCase) &&
+                    string.Equals(f.Brand ?? "", request.Brand ?? "", StringComparison.CurrentCultureIgnoreCase) &&
+                    string.Equals(f.Preparation ?? "", request.Preparation ?? "", StringComparison.CurrentCultureIgnoreCase) && f.Barcode == request.Barcode);
+                _selectedFood = new Food(prior?.Id ?? Guid.NewGuid(), request.Name, "Мои блюда", new(request.Calories, request.Protein, request.Fat, request.Carbs), true)
+                    { Unit = unit, Brand = request.Brand, Preparation = request.Preparation, Barcode = request.Barcode, Servings = prior?.Servings ?? [] };
+                _session.SaveFood(_selectedFood); CloseDrawer(); _foodFilter = "Любимые";
+                if (selected is not null) selected(_selectedFood); else Navigate("foods");
+                Notify("Сохранено в мои блюда ✓"); return;
+            }
+            var result = await client.Create(request, operationId, lifetime.Token);
             EnsureCatalogProfile(profileId); lifetime.Token.ThrowIfCancellationRequested();
             _selectedFood = _session.SaveCatalogFood(result.Personal); _session.SaveFood(_selectedFood with { Favorite = true });
             CloseDrawer(); _foodFilter = "Любимые";

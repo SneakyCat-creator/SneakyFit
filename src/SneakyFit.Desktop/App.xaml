@@ -57,12 +57,13 @@
     <SolidColorBrush x:Key="FieldFocusSurface" Color="#DCD4E8"/>
     <SolidColorBrush x:Key="FieldDisabledSurface" Color="#EFECF4"/>
     <SolidColorBrush x:Key="FieldDisabledText" Color="#7D8590"/>
-    <SolidColorBrush x:Key="FieldSelection" Color="#CBD7DD"/>
+    <SolidColorBrush x:Key="FieldSelection" Color="#CDBCEB"/>
+    <SolidColorBrush x:Key="FieldSelectionText" Color="#29223F"/>
     <Style x:Key="FieldEditor" TargetType="TextBox">
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/><Setter Property="Background" Value="Transparent"/>
       <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="0"/>
       <Setter Property="Foreground" Value="#29223F"/><Setter Property="CaretBrush" Value="#29223F"/>
-      <Setter Property="SelectionBrush" Value="{StaticResource FieldSelection}"/><Setter Property="SelectionOpacity" Value="1"/>
+      <Setter Property="SelectionBrush" Value="{StaticResource FieldSelection}"/><Setter Property="SelectionTextBrush" Value="{StaticResource FieldSelectionText}"/><Setter Property="SelectionOpacity" Value="1"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox"><ScrollViewer x:Name="PART_ContentHost"/></ControlTemplate></Setter.Value></Setter>
     </Style>
@@ -142,7 +143,7 @@
         <Border x:Name="Field" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12">
           <Grid x:Name="PART_Root">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="42"/></Grid.ColumnDefinitions>
-            <DatePickerTextBox x:Name="PART_TextBox" Foreground="{TemplateBinding Foreground}" Background="Transparent" BorderThickness="0" Padding="{TemplateBinding Padding}" VerticalContentAlignment="Center" FocusVisualStyle="{x:Null}" SelectionBrush="{StaticResource FieldSelection}" SelectionOpacity="1" CaretBrush="#29223F">
+            <DatePickerTextBox x:Name="PART_TextBox" Foreground="{TemplateBinding Foreground}" Background="Transparent" BorderThickness="0" Padding="{TemplateBinding Padding}" VerticalContentAlignment="Center" FocusVisualStyle="{x:Null}" SelectionBrush="{StaticResource FieldSelection}" SelectionTextBrush="{StaticResource FieldSelectionText}" SelectionOpacity="1" CaretBrush="#29223F">
               <DatePickerTextBox.Template><ControlTemplate TargetType="DatePickerTextBox">
                 <Grid><ScrollViewer x:Name="PART_ContentHost"/>
                   <ContentControl x:Name="PART_Watermark" Margin="{TemplateBinding Padding}" Visibility="Collapsed" Foreground="#707B8A" VerticalAlignment="Center" Focusable="False" IsHitTestVisible="False"/>
