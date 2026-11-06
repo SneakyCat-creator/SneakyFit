@@ -27,29 +27,13 @@ public partial class MainWindow
     {
         var entry = _session.Day(date).Meals.SelectMany(m => m.Entries).FirstOrDefault(e => e.Id == entryId);
         if (entry is null) return;
-        var name = Input(entry.Food.Name);
-        var product = new Food(entry.Food.SourceFoodId, entry.Food.Name, "", entry.Food.Per100)
-            { Unit = entry.Food.Unit, GramsPerMillilitre = entry.Food.GramsPerMillilitre,
-                Servings = _session.Data.Foods.FirstOrDefault(f => f.Id == entry.Food.SourceFoodId && f.Unit == entry.Food.Unit)?.Servings ?? [] };
-        var quantity = new FoodQuantityEditor(product, entry.Grams);
-        var kcal = Input(N(entry.Food.Per100.Calories, "0.##")); var protein = Input(N(entry.Food.Per100.Protein, "0.##"));
-        var fat = Input(N(entry.Food.Per100.Fat, "0.##")); var carbs = Input(N(entry.Food.Per100.Carbs, "0.##"));
-        var kind = Select(["Съедено", "В плане"], entry.Kind == EntryKind.Eaten ? 0 : 1); kind.IsEnabled = date <= DateOnly.FromDateTime(DateTime.Now);
-        var total = T("", SubheadingSize, Purple, true);
-        void Estimate() { try { total.Text = N(quantity.BaseAmount * Num(kcal, "Ккал") / 100) + " ккал в порции"; } catch (ArgumentException) { total.Text = "—"; } }
-        quantity.Changed += Estimate; kcal.TextChanged += (_, _) => Estimate(); Estimate();
-        void ReturnToMeal() { BackDrawer(); MealDrawer(date, templateId); }
-        var symbol = FoodUnits.Symbol(entry.Food.Unit);
-        var body = S(Field("Название", name), Field("Порция", quantity), Field("Запись", kind), M(total, bottom: 16), T("На 100 " + symbol, BodySize, Ink, true), M(Pair(Field("Ккал", kcal), MacroField("Белки, г", protein)), top: 12), Pair(MacroField("Жиры, г", fat), MacroField("Углеводы, г", carbs)));
-        Drawer("Изменить порцию", body, Pair(Btn("Удалить", () => Safe(() => { _session.RemoveEntry(date, entryId); ReturnToMeal(); }), "#F5E7E8", "#B54F5B"), Primary("Сохранить", () => Safe(() =>
+        var saved = _session.Data.Foods.FirstOrDefault(f => f.Id == entry.Food.SourceFoodId);
+        var food = new Food(entry.Food.SourceFoodId, entry.Food.Name, "", entry.Food.Per100, saved?.Favorite ?? false)
         {
-            _ = quantity.BaseAmount;
-            var nutrition = new Nutrition(Num(kcal, "Ккал", 0, 1000), MacroValue(protein, "Белки"), MacroValue(fat, "Жиры"), MacroValue(carbs, "Углеводы"));
-            nutrition = FoodUnits.ConvertNutrition(nutrition, product.Unit, quantity.SelectedUnit, quantity.GramsPerMillilitre);
-            _session.EditEntry(date, entryId, name.Text, nutrition, quantity.SelectedAmount, kind.SelectedIndex == 0 ? EntryKind.Eaten : EntryKind.Planned, quantity.SelectedUnit, quantity.GramsPerMillilitre);
-            RememberFoodDensity(product, quantity.GramsPerMillilitre);
-            ReturnToMeal();
-        }))));
+            Unit = entry.Food.Unit, GramsPerMillilitre = entry.Food.GramsPerMillilitre, Details = entry.Food.Details,
+            Servings = saved?.Unit == entry.Food.Unit ? saved.Servings : []
+        };
+        ProductDrawer(SneakyFit.Application.CatalogProduct.FromFood(food), food, date, templateId, entry: entry);
     }
 
     private void EditMealTime(DateOnly date, Guid templateId)

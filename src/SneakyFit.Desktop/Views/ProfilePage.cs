@@ -159,7 +159,7 @@ public partial class MainWindow
     private void ImportProfile()
     {
         var dialog = new OpenFileDialog { Filter = "Профиль SneakyFit|*.json;*.bak" }; if (dialog.ShowDialog(this) != true) return;
-        Drawer("Открыть профиль?", S(T(System.IO.Path.GetFileName(dialog.FileName), HeadingSize, Ink, true), M(T("Текущий профиль будет заменён. Его предыдущая версия останется в резервной копии.", BodySize, Muted), top: 17)), Primary("Открыть", () => Safe(() => { _session.Import(dialog.FileName); _selectedFood = null; Navigate("profile"); Notify("Профиль открыт ✓"); })));
+        Drawer("Открыть профиль?", S(T(System.IO.Path.GetFileName(dialog.FileName), HeadingSize, Ink, true), M(T("Текущий профиль будет заменён. Его предыдущая версия останется в резервной копии.", BodySize, Muted), top: 17)), Primary("Открыть", () => Safe(() => { _session.Import(dialog.FileName); Navigate("profile"); Notify("Профиль открыт ✓"); })));
     }
 }
 

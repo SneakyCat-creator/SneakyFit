@@ -51,13 +51,13 @@ public sealed class JsonWorkspaceRepository(IAppPaths paths) : IWorkspaceReposit
             data.Profile.DefaultTarget is null || data.Profile.DefaultTarget.Split is null || !data.Profile.DefaultTarget.Split.IsValid ||
             data.Profile.DefaultTarget.Calories <= 0 || data.Profile.MealTemplates is null || data.Profile.MealTemplates.Count == 0 ||
             data.Profile.MealTemplates.Any(m => m is null || string.IsNullOrWhiteSpace(m.Name)) ||
-            data.Foods.Any(f => f is null || string.IsNullOrWhiteSpace(f.Name) || !Enum.IsDefined(f.Unit) || !FoodUnits.IsValidDensity(f.GramsPerMillilitre) || !FoodUnits.AreValidServings(f.Servings) ||
+            data.Foods.Any(f => f is null || string.IsNullOrWhiteSpace(f.Name) || !Enum.IsDefined(f.Unit) || !FoodUnits.IsValidDensity(f.GramsPerMillilitre) || !FoodUnits.AreValidServings(f.Servings) || !FoodDetails.IsValid(f.Details) ||
                 f.Per100.Calories < 0 || f.Per100.Protein < 0 || f.Per100.Fat < 0 || f.Per100.Carbs < 0) ||
             data.Days.Any(d => d is null || d.Target is null || d.Target.Split is null || !d.Target.Split.IsValid || d.Target.Calories <= 0 || d.Target.ActivityCreditPercent < 0 || d.Target.ActivityCreditPercent > 100 || d.Meals is null || d.Activities is null ||
                 d.Activities.Any(a => a is null || a.Steps < 0 || a.Minutes < 0 || a.EstimatedCalories < 0) ||
                 d.ActivityGoal is { IsValid: false } ||
                 d.Meals.Any(m => m is null || m.Entries is null || m.Entries.Any(e => e is null || e.Food is null || !Enum.IsDefined(e.Food.Unit) || !FoodUnits.IsValidDensity(e.Food.GramsPerMillilitre) ||
-                    e.Grams <= 0 || e.Grams > 10000 || !Enum.IsDefined(e.Kind) || !ValidNutrition(e.Food.Per100)))))
+                    e.Grams <= 0 || e.Grams > 10000 || !Enum.IsDefined(e.Kind) || !ValidNutrition(e.Food.Per100) || !FoodDetails.IsValid(e.Food.Details)))))
             throw new InvalidDataException("В файле профиля отсутствуют обязательные данные или есть некорректные значения.");
         if (data.Days.GroupBy(d => d.Date).Any(g => g.Count() > 1) ||
             data.Weight.Any(w => w is null || w.Kilograms <= 0 || w.Kilograms > 500) ||
@@ -76,7 +76,7 @@ public sealed class JsonWorkspaceRepository(IAppPaths paths) : IWorkspaceReposit
             SeenInsights = (advisor.SeenInsights ?? []).Where(id => !string.IsNullOrWhiteSpace(id) && id.Length <= 200).Distinct().TakeLast(128).ToList()
         };
         return data with { SchemaVersion = Workspace.CurrentSchemaVersion, Profile = data.Profile with { Advisor = advisor },
-            Foods = data.Foods.Select(f => f.Recipe is { } r ? f with { Per100 = r.Per100 } : f).ToList() };
+            Foods = data.Foods.Select(f => f.Recipe is { } r ? f with { Per100 = r.Per100, Details = FoodDetails.ForRecipe(r) } : f).ToList() };
     }
 
     private static bool ValidNutrition(Nutrition value) => value.Calories >= 0 && value.Protein >= 0 && value.Fat >= 0 && value.Carbs >= 0;

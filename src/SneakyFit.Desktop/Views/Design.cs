@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Documents;
+using SneakyFit.Domain;
 
 namespace SneakyFit.Desktop.Views;
 
@@ -12,7 +13,7 @@ internal static class D
     public static readonly Thickness ControlPadding = new(12, 8, 12, 8);
     public const string Ink = "#29223F", Muted = "#91889F", Purple = "#7B4AD8", Mint = "#2BA98B", Coral = "#F17D79", Gold = "#E6AA3C";
     public static Brush B(string hex) => new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
-    public static TextBlock T(string value, double size = BodySize, string color = Ink, bool bold = false) => new() { Text = value, FontSize = size, Foreground = B(color), FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+    public static TextBlock T(string value, double size = BodySize, string color = Ink, bool bold = false) => new() { Text = FoodText.Decode(value), FontSize = size, Foreground = B(color), FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
     public static StackPanel S(params UIElement[] items) { var panel = new StackPanel(); foreach (var item in items) panel.Children.Add(item); return panel; }
     public static StackPanel H(params UIElement[] items) { var panel = S(items); panel.Orientation = Orientation.Horizontal; return panel; }
     public static Border M(UIElement child, double top = 0, double bottom = 0, double left = 0, double right = 0) => new() { Child = child, Margin = new Thickness(left, top, right, bottom) };
@@ -35,7 +36,7 @@ internal static class D
     public static Button Btn(string label, Action action, string background = "#EDE7FC", string foreground = Purple)
     {
         var color = (Color)ColorConverter.ConvertFromString(background);
-        var button = new Button { Content = label, Foreground = B(foreground) };
+        var button = new Button { Content = FoodText.Decode(label), Foreground = B(foreground) };
         button.Background = new LinearGradientBrush(color, Color.FromArgb(color.A, (byte)Math.Max(0, color.R - 4), (byte)Math.Max(0, color.G - 5), (byte)Math.Max(0, color.B - 2)), 90);
         button.Click += (_, _) => action(); return button;
     }
@@ -45,13 +46,13 @@ internal static class D
     public static Grid Between(UIElement left, UIElement right) { var grid = new Grid(); grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); grid.Children.Add(left); Grid.SetColumn(right, 1); grid.Children.Add(right); return grid; }
     public static TextBox Input(string value = "", bool metric = false)
     {
-        var input = new TextBox { Text = value };
+        var input = new TextBox { Text = FoodText.Decode(value) };
         if (metric) input.SetResourceReference(FrameworkElement.StyleProperty, "MetricInput");
         return input;
     }
     public static StackPanel Field(string name, UIElement input, string color = "#655F72") =>
     S(M(T(name, CaptionSize, color), bottom: 5), M(input, bottom: 12));
-    public static ComboBox Select(IEnumerable<string> options, int selected = 0) { var box = new ComboBox(); foreach (var option in options) box.Items.Add(option); box.SelectedIndex = selected; return box; }
+    public static ComboBox Select(IEnumerable<string> options, int selected = 0) { var box = new ComboBox(); foreach (var option in options) box.Items.Add(FoodText.Decode(option)); box.SelectedIndex = selected; return box; }
     public static Border Progress(decimal value, decimal total, string fill, string track = "#F2EBFA", double height = 8)
     {
         var fraction = total <= 0 ? 0 : Math.Clamp((double)(value / total), 0, 1); var grid = new Grid();
@@ -61,7 +62,7 @@ internal static class D
     }
     public static TextBlock Link(string prefix, string linkText, Action action, string suffix = "", double size = BodySize)
     {
-        var text = T("", size); text.Inlines.Add(new Run(prefix)); var link = new Hyperlink(new Run(linkText)) { Foreground = B(Purple), FontWeight = FontWeights.SemiBold }; link.Click += (_, _) => action(); text.Inlines.Add(link); text.Inlines.Add(new Run(suffix)); return text;
+        var text = T("", size); text.Inlines.Add(new Run(FoodText.Decode(prefix))); var link = new Hyperlink(new Run(FoodText.Decode(linkText))) { Foreground = B(Purple), FontWeight = FontWeights.SemiBold }; link.Click += (_, _) => action(); text.Inlines.Add(link); text.Inlines.Add(new Run(FoodText.Decode(suffix))); return text;
     }
     public static Grid Equal(params UIElement[] elements) { var grid = new Grid(); for (var i = 0; i < elements.Length; i++) { grid.ColumnDefinitions.Add(new ColumnDefinition()); var item = M(elements[i], right: i < elements.Length - 1 ? 16 : 0); Grid.SetColumn(item, i); grid.Children.Add(item); } return grid; }
     public static TextBlock Icon(string glyph, double size = 21, string color = Purple) { var text = T(glyph, size, color); text.FontFamily = new FontFamily("Segoe Fluent Icons"); return text; }

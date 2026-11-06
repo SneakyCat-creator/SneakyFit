@@ -23,7 +23,7 @@ public partial class MainWindow
         var favorites = new WrapPanel();
         foreach (var food in _session.Data.Foods.Where(f => f.Favorite).Take(6))
         {
-            var chip = Btn(food.Name + "  +", () => Drawer(food.Name, PortionPanel(food, start, planned: start > today, drawer: true)), "#FFFFFF", "#655F72"); chip.FontSize = BodySize; chip.Padding = ControlPadding; chip.Margin = new Thickness(0, 0, 8, 8); MakeDraggable(chip, food); favorites.Children.Add(chip);
+            var chip = Btn(food.Name + "  +", () => ProductDrawer(food, start, planned: start > today), "#FFFFFF", "#655F72"); chip.FontSize = BodySize; chip.Padding = ControlPadding; chip.Margin = new Thickness(0, 0, 8, 8); MakeDraggable(chip, food); favorites.Children.Add(chip);
         }
         root.Children.Add(M(favorites, bottom: 13));
         var columns = new List<UIElement>();

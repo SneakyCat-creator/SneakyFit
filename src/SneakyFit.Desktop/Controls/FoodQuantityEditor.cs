@@ -17,6 +17,7 @@ public sealed class FoodQuantityEditor : StackPanel
     private readonly FrameworkElement _densityField;
     private int _previousIndex;
     private bool _updating;
+    private decimal _lastKnownBaseAmount;
 
     public TextBox AmountInput { get; }
     public ComboBox UnitInput { get; }
@@ -28,6 +29,7 @@ public sealed class FoodQuantityEditor : StackPanel
         if (!Enum.IsDefined(food.Unit) || !FoodUnits.IsValidDensity(food.GramsPerMillilitre))
             throw new ArgumentException("Проверьте единицы продукта.", nameof(food));
         _food = food;
+        _lastKnownBaseAmount = baseAmount;
         _choices =
         [
             new("г", FoodUnit.Grams, 1),
@@ -51,8 +53,8 @@ public sealed class FoodQuantityEditor : StackPanel
         Children.Add(_densityField);
         UpdateDensityField();
 
-        AmountInput.TextChanged += (_, _) => { if (!_updating) Changed?.Invoke(); };
-        DensityInput.TextChanged += (_, _) => { if (!_updating) Changed?.Invoke(); };
+        AmountInput.TextChanged += (_, _) => { if (!_updating) AmountChanged(); };
+        DensityInput.TextChanged += (_, _) => { if (!_updating) AmountChanged(); };
         UnitInput.SelectionChanged += (_, _) => ChangeUnit();
     }
 
@@ -102,6 +104,7 @@ public sealed class FoodQuantityEditor : StackPanel
     {
         Unit = SelectedUnit,
         Per100 = FoodUnits.ConvertNutrition(_food.Per100, _food.Unit, SelectedUnit, GramsPerMillilitre),
+        Details = _food.Details?.ConvertTo(FoodUnits.Basis(SelectedUnit), FoodUnits.ConvertAmount(100, SelectedUnit, _food.Unit, GramsPerMillilitre) / 100),
         GramsPerMillilitre = GramsPerMillilitre
     };
 
@@ -114,6 +117,7 @@ public sealed class FoodQuantityEditor : StackPanel
             _previousIndex = _food.Unit == FoodUnit.Millilitres ? 1 : 0;
             UnitInput.SelectedIndex = _previousIndex;
             AmountInput.Text = Format(amount);
+            _lastKnownBaseAmount = amount;
             UpdateDensityField();
         }
         finally { _updating = false; }
@@ -128,28 +132,36 @@ public sealed class FoodQuantityEditor : StackPanel
         _updating = true;
         try
         {
-            if (next.Serving) AmountInput.Text = "1";
-            else
+            try
             {
+                var previousAmount = Number(AmountInput.Text, "Порция", .000001m, 10000) * previous.Factor;
+                var converted = FoodUnits.ConvertAmount(previousAmount, previous.Unit, next.Unit, GramsPerMillilitre);
+                AmountInput.Text = Format(converted / next.Factor);
+            }
+            catch (ArgumentException)
+            {
+                // A pending volume without density must not overwrite the last known mass (or vice versa).
                 try
                 {
-                    var previousAmount = Number(AmountInput.Text, "Порция", .000001m, 10000) * previous.Factor;
-                    var converted = FoodUnits.ConvertAmount(previousAmount, previous.Unit, next.Unit, GramsPerMillilitre);
+                    var converted = FoodUnits.ConvertAmount(_lastKnownBaseAmount, _food.Unit, next.Unit, GramsPerMillilitre);
                     AmountInput.Text = Format(converted / next.Factor);
                 }
-                catch (ArgumentException)
-                {
-                    // Keep what the user typed while the missing relation is being supplied.
-                }
+                catch (ArgumentException) { }
             }
             _previousIndex = UnitInput.SelectedIndex;
             UpdateDensityField();
         }
         finally { _updating = false; }
+        AmountChanged();
+    }
+
+    private void AmountChanged()
+    {
+        try { _lastKnownBaseAmount = BaseAmount; } catch (ArgumentException) { }
         Changed?.Invoke();
     }
 
-private void UpdateDensityField() => _densityField.Visibility =
+    private void UpdateDensityField() => _densityField.Visibility =
     SelectedUnit != _food.Unit && _food.GramsPerMillilitre is null ? Visibility.Visible : Visibility.Hidden;
     private static string Format(decimal value) => value.ToString("0.########", Russian);
 

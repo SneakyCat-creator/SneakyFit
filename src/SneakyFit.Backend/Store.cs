@@ -213,6 +213,11 @@ public sealed class Store
         using var command = Command(db, "INSERT INTO user_foods(user_id,product_id,body,updated_at) VALUES($user,$product,$body,$now) ON CONFLICT(user_id,product_id) DO UPDATE SET body=excluded.body,updated_at=excluded.updated_at", tx,
             ("$user", userId), ("$product", result.Id), ("$body", JsonSerializer.Serialize(result, JsonDefaults.Options)), ("$now", Now)); command.ExecuteNonQuery(); return result;
     }
+    public CatalogProduct? PersonalProduct(string userId, string id)
+    {
+        using var db = Open(); using var command = Command(db, "SELECT body FROM user_foods WHERE user_id=$user AND product_id=$id", null, ("$user", userId), ("$id", id));
+        return command.ExecuteScalar() is string body ? JsonSerializer.Deserialize<CatalogProduct>(body, JsonDefaults.Options) : null;
+    }
     public IReadOnlyList<CatalogProduct> Personal(string userId)
     {
         using var db = Open(); using var command = Command(db, "SELECT body FROM user_foods WHERE user_id=$user ORDER BY updated_at DESC,product_id", null, ("$user", userId));

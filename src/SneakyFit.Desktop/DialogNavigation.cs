@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using System.Windows.Media;
+using SneakyFit.Domain;
 using SneakyFit.Desktop.Controls;
 
 namespace SneakyFit.Desktop;
@@ -12,6 +14,7 @@ public partial class MainWindow
     private readonly Stack<DialogFrame> _dialogHistory = new();
     private double _dialogWidth = 560;
     private double? _dialogTop;
+    private int _dialogGeneration;
     private IInputElement? _beforeDialogFocus;
     private FrameworkElement? _pressedShade;
     private bool _dismissedWithPointer, _consumePointerRelease;
@@ -119,7 +122,8 @@ public partial class MainWindow
     private void FreezeDialogTop()
     {
         if (_dialogTop is not null || DrawerOverlay.Visibility != Visibility.Visible) return;
-        var top = DrawerPanel.TranslatePoint(new Point(0, 0), DrawerOverlay).Y;
+        // Layout offset excludes the opening animation's translation.
+        var top = VisualTreeHelper.GetOffset(DrawerPanel).Y;
         _dialogTop = Math.Max(DrawerPanel.Margin.Top, Math.Round(top));
         ResizeDialog();
     }
@@ -127,7 +131,10 @@ public partial class MainWindow
     private bool Drawer(string title, UIElement body, UIElement? footer = null, double width = 560, bool replace = false)
     {
         if (_flushDrawer?.Invoke() == false) return false;
+        title = FoodText.Decode(title);
         var wasOpen = DrawerOverlay.Visibility == Visibility.Visible;
+        var generation = ++_dialogGeneration;
+        if (wasOpen) FreezeDialogTop();
         if (!wasOpen) _beforeDialogFocus = Keyboard.FocusedElement;
         var nextPage = wasOpen && !replace && DrawerTitle.Text != title;
         if (DrawerOverlay.Visibility == Visibility.Visible)
@@ -139,11 +146,11 @@ public partial class MainWindow
         if (!wasOpen || nextPage) _dialogTop = null;
         _flushDrawer = null; _releaseDrawer = null;
         DrawerBody.Content = null; DrawerFooter.Content = null;
-        _dialogWidth = width; DrawerTitle.Text = title;
+        _dialogWidth = width; DrawerTitle.Text = FoodText.Decode(title);
         DrawerBody.Content = body; DrawerFooter.Content = footer; DrawerError.Text = "";
         ResizeDialog();
         DrawerOverlay.Visibility = Visibility.Visible; DrawerScroll.ScrollToTop(); SetDialogInteraction(true);
-        Dispatcher.BeginInvoke(FreezeDialogTop, DispatcherPriority.Loaded);
+        Dispatcher.BeginInvoke(() => { if (generation == _dialogGeneration) FreezeDialogTop(); }, DispatcherPriority.Loaded);
         if (!wasOpen)
         {
             UiMotion.Enter(DrawerOverlay, UiMotionKind.Shade);
@@ -156,6 +163,7 @@ public partial class MainWindow
     private bool BackDrawer()
     {
         if (_flushDrawer?.Invoke() == false) return false;
+        var generation = ++_dialogGeneration;
         _releaseDrawer?.Invoke(); _flushDrawer = null; _releaseDrawer = null;
         DrawerBody.Content = null; DrawerFooter.Content = null; DrawerError.Text = "";
         if (_dialogHistory.TryPop(out var previous))
@@ -167,6 +175,7 @@ public partial class MainWindow
             SetDialogInteraction(true);
             Dispatcher.BeginInvoke(() =>
             {
+                if (generation != _dialogGeneration) return;
                 DrawerScroll.ScrollToVerticalOffset(previous.Scroll);
                 FreezeDialogTop();
             }, DispatcherPriority.Loaded);
@@ -185,6 +194,7 @@ public partial class MainWindow
     private bool CloseDrawer()
     {
         if (_flushDrawer?.Invoke() == false) return false;
+        _dialogGeneration++;
         _releaseDrawer?.Invoke(); _flushDrawer = null; _releaseDrawer = null;
         while (_dialogHistory.TryPop(out var previous)) previous.Release?.Invoke();
         UiMotion.Stop(DrawerOverlay); UiMotion.Stop(DrawerPanel);

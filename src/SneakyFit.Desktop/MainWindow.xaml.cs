@@ -30,7 +30,6 @@ public partial class MainWindow : Window
     private Action? _refreshFoods;
     private string _menuTab = "Прогресс", _progressTab = "Вес";
     private Action<string>? _selectMenuTab;
-    private Food? _selectedFood;
     private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly Dictionary<(Guid FoodId, FoodUnit Unit), decimal> _lastPortions = [];
     private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");

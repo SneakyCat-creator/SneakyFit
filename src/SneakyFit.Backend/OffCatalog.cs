@@ -1,3 +1,4 @@
+using SneakyFit.Domain;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
@@ -31,10 +32,14 @@ public sealed class OffCache
         return cmd.ExecuteScalar() is string body ? JsonSerializer.Deserialize<T>(body, JsonDefaults.Options) : default;
     }
     public void Write<T>(string key, T value, TimeSpan lifetime)
+        => WriteMany(new[] { new KeyValuePair<string, T>(key, value) }, lifetime);
+    public void WriteMany<T>(IEnumerable<KeyValuePair<string, T>> values, TimeSpan lifetime)
     {
         using var db = Open(); using var tx = db.BeginTransaction(); using var cmd = db.CreateCommand(); cmd.Transaction = tx;
         cmd.CommandText = "INSERT INTO responses(key,body,expires_at) VALUES($key,$body,$expiry) ON CONFLICT(key) DO UPDATE SET body=excluded.body,expires_at=excluded.expires_at";
-        cmd.Parameters.AddWithValue("$key", key); cmd.Parameters.AddWithValue("$body", JsonSerializer.Serialize(value, JsonDefaults.Options)); cmd.Parameters.AddWithValue("$expiry", DateTimeOffset.UtcNow.Add(lifetime).ToUnixTimeSeconds()); cmd.ExecuteNonQuery();
+        var key = cmd.Parameters.Add("$key", SqliteType.Text); var body = cmd.Parameters.Add("$body", SqliteType.Text);
+        cmd.Parameters.AddWithValue("$expiry", DateTimeOffset.UtcNow.Add(lifetime).ToUnixTimeSeconds());
+        foreach (var value in values) { key.Value = value.Key; body.Value = JsonSerializer.Serialize(value.Value, JsonDefaults.Options); cmd.ExecuteNonQuery(); }
         using var prune = db.CreateCommand(); prune.Transaction = tx; prune.CommandText = "DELETE FROM responses WHERE expires_at<=$now OR key IN (SELECT key FROM responses ORDER BY expires_at DESC LIMIT -1 OFFSET 5000)";
         prune.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds()); prune.ExecuteNonQuery(); tx.Commit();
     }
@@ -43,8 +48,8 @@ public sealed class OffCache
 
 public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent) : IExternalCatalog
 {
-    private const int PageSize = 20;
-    private const string Fields = "code,product_name,product_name_ru,product_name_be,brands,nutriments,nutrition_data_per,nutrition,product_quantity_unit,quantity,serving_quantity,serving_quantity_unit,serving_size,last_modified_t";
+    private const int PageSize = 80;
+    private const string Fields = "code,product_name,product_name_ru,product_name_be,product_name_en,generic_name,generic_name_ru,generic_name_en,brands,nutriments,nutrition_data_per,nutrition,product_quantity_unit,quantity,serving_quantity,serving_quantity_unit,serving_size,last_modified_t,ingredients_text,ingredients_text_ru,ingredients_text_be,ingredients_text_en,allergens_tags,traces_tags,additives_tags,categories_tags,nutriscore_grade,nutrition_grades,nova_group";
     private readonly RequestBudget _searchBudget = new(10), _productBudget = new(15);
     private readonly ConcurrentDictionary<string, Lazy<Task<SearchResult>>> _searches = new();
     private readonly ConcurrentDictionary<string, Lazy<Task<ProductResult>>> _products = new();
@@ -52,29 +57,62 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
 
     public Task<SearchResult> Search(string query, int page, CancellationToken cancellationToken)
     {
-        var key = $"search:units-v2:{query.ToLowerInvariant()}:{page}";
-        var cached = cache.Read<SearchResult>(key); if (cached is not null) return Task.FromResult(cached);
+        var key = $"search:details-v5:{query.ToLowerInvariant()}:{page}";
+        SearchResult WithoutMissing(SearchResult result) => result with { Products = result.Products
+            .Where(p => cache.Read<ProductResult>("barcode:details-v5:" + p.Id[4..]) is not { Product: null }).ToArray() };
+        var cached = cache.Read<SearchResult>(key); if (cached is not null) return Task.FromResult(WithoutMissing(cached));
         return Coalesce(_searches, key, async () =>
         {
-            if (cache.Read<SearchResult>(key) is { } saved) return saved;
-            _searchBudget.Take();
-            using var document = await Read(new Uri($"https://search.openfoodfacts.org/search?q={Uri.EscapeDataString(query)}&page={page}&page_size={PageSize}&langs=ru,be,en&fields={Fields}"));
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("hits", out var products) || products.ValueKind != JsonValueKind.Array) throw new ApiException(502, "Open Food Facts вернул неполный ответ.");
-            var parsed = products.EnumerateArray().Take(PageSize).Select(Parse).OfType<CatalogProduct>().DistinctBy(p => p.Id).ToArray();
-            if (products.GetArrayLength() > 0 && parsed.Length == 0) throw new ApiException(502, "Open Food Facts вернул неполный ответ.");
-            var count = NonNegativeInteger(root, "count");
-            var pageCount = NonNegativeInteger(root, "page_count");
-            var hasMore = pageCount is not null ? page < pageCount : count is not null ? (long)page * PageSize < count : products.GetArrayLength() == PageSize;
-            // The search index omits the nutrition basis. The selected product is hydrated by barcode.
-            var result = new SearchResult(parsed, hasMore, parsed.Any(p => p.Calories is null || p.Protein is null || p.Fat is null || p.Carbs is null) ? "У части продуктов не заполнены КБЖУ." : null);
+            if (cache.Read<SearchResult>(key) is { } saved) return WithoutMissing(saved);
+            var primary = await SearchSource(query, page);
+            var candidates = primary.Products.ToList();
+            var hasMore = primary.HasMore;
+            var variantKey = "spellings:details-v5:" + query.ToLowerInvariant();
+            var variants = page == 1 ? (!primary.HasMore && candidates.Count < 8 ? CatalogSearch.Spellings(query).ToArray() : [])
+                : cache.Read<string[]>(variantKey) ?? [];
+            var usedVariants = new List<string>();
+            // Search remains worldwide: a Russian label may belong to any country.
+            // Sparse brand searches also try Latin spelling in the same OFF index.
+            foreach (var alternative in variants)
+                {
+                    try
+                    {
+                        var extra = await SearchSource(alternative, page);
+                        candidates.AddRange(extra.Products); hasMore |= extra.HasMore; usedVariants.Add(alternative);
+                    }
+                    catch (ApiException) { break; } // optional enrichment must not hide valid primary results
+                    if (page == 1 && candidates.DistinctBy(p => p.Id).Count() >= 8) break;
+                }
+            if (page == 1) cache.Write(variantKey, usedVariants, TimeSpan.FromDays(1));
+            var parsed = candidates
+                .Where(p => cache.Read<ProductResult>("barcode:details-v5:" + p.Id[4..]) is not { Product: null })
+                .GroupBy(p => p.Id).Select(g => g.OrderByDescending(CatalogQuality.Completeness).First())
+                .OrderByDescending(p => p.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || p.Brand?.Contains(query, StringComparison.OrdinalIgnoreCase) == true)
+                .ThenByDescending(CatalogQuality.Completeness).ToArray();
+            // Filtering affects visibility only; personal products and canonical source data stay intact.
+            var result = new SearchResult(parsed, hasMore);
+            cache.WriteMany(parsed.Select(product => new KeyValuePair<string, CatalogProduct>("summary:details-v5:" + product.Id, product)), TimeSpan.FromDays(1));
             cache.Write(key, result, TimeSpan.FromSeconds(90)); return result;
         }, cancellationToken);
     }
+    private async Task<SearchResult> SearchSource(string query, int page)
+    {
+        _searchBudget.Take();
+        // Do not interpret a product name as a Lucene expression (quotes, brackets, etc.).
+        var literal = Regex.Replace(FoodText.Decode(query), @"[^\p{L}\p{N}\s]", " ").Trim();
+        if (literal.Length < 2) throw new ApiException(400, "Введите название продукта.");
+        using var document = await Read(new Uri($"https://search.openfoodfacts.org/search?q={Uri.EscapeDataString(literal)}&page={page}&page_size={PageSize}&langs=ru,be,en&fields={Fields}"));
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("hits", out var products) || products.ValueKind != JsonValueKind.Array) throw new ApiException(502, "Open Food Facts вернул неполный ответ.");
+        var count = NonNegativeInteger(root, "count"); var pages = NonNegativeInteger(root, "page_count");
+        var more = pages is not null ? page < pages : count is not null ? (long)page * PageSize < count : products.GetArrayLength() == PageSize;
+        return new(products.EnumerateArray().Take(PageSize).Select(Parse).OfType<CatalogProduct>().Where(CatalogQuality.Usable).ToArray(), more);
+    }
     public async Task<CatalogProduct?> Barcode(string barcode, CancellationToken cancellationToken)
     {
-        var key = "barcode:units-v2:" + barcode;
-        if (cache.Read<ProductResult>(key) is { } cached) return cached.Product;
+        barcode = FoodValidation.NormalizeOffCode(barcode);
+        var key = "barcode:details-v5:" + barcode;
+        if (cache.Read<ProductResult>(key) is { } cached) return WithSearchSummary(cached.Product);
         var result = await Coalesce(_products, key, async () =>
         {
             if (cache.Read<ProductResult>(key) is { } saved) return saved;
@@ -83,9 +121,38 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
             CatalogProduct? product = null;
             if (document.RootElement.ValueKind != JsonValueKind.Object) throw new ApiException(502, "Open Food Facts вернул неполный ответ.");
             if (document.RootElement.TryGetProperty("product", out var value)) product = Parse(value);
-            var response = new ProductResult(product); cache.Write(key, response, TimeSpan.FromMinutes(product is null ? 2 : 15)); return response;
+            var response = new ProductResult(product); cache.Write(key, response, TimeSpan.FromMinutes(15)); return response;
         }, cancellationToken);
-        return result.Product;
+        return WithSearchSummary(result.Product);
+    }
+
+    private CatalogProduct? WithSearchSummary(CatalogProduct? product)
+    {
+        if (product is null || cache.Read<CatalogProduct>("summary:details-v5:" + product.Id) is not { } summary) return product;
+        var sameBasis = product.Basis == summary.Basis || product.Basis == "unknown";
+        var missingLabel = product.Calories is null || product.Protein is null || product.Fat is null || product.Carbs is null;
+        var details = product.Details ?? new() { Basis = product.Basis };
+        if (sameBasis && summary.Details is { } fallback)
+            details = OffProductDetails.Merge(details with { Basis = summary.Basis }, fallback) with
+            {
+                FromSearchIndex = details.FromSearchIndex || missingLabel,
+                CaloriesEstimated = product.Calories is null ? fallback.CaloriesEstimated : details.CaloriesEstimated,
+                Ingredients = details.Ingredients ?? fallback.Ingredients,
+                Allergens = details.Allergens.Count > 0 ? details.Allergens : fallback.Allergens,
+                Traces = details.Traces.Count > 0 ? details.Traces : fallback.Traces,
+                Additives = details.Additives.Count > 0 ? details.Additives : fallback.Additives,
+                Categories = details.Categories.Count > 0 ? details.Categories : fallback.Categories,
+                NutriScore = details.NutriScore ?? fallback.NutriScore, NovaGroup = details.NovaGroup ?? fallback.NovaGroup
+            };
+        var preferRussian = summary.Name.Any(c => c is >= 'А' and <= 'я' or 'Ё' or 'ё') && !product.Name.Any(c => c is >= 'А' and <= 'я' or 'Ё' or 'ё');
+        return product with
+        {
+            Name = product.Name.StartsWith("Продукт ", StringComparison.Ordinal) || preferRussian ? summary.Name : product.Name,
+            Brand = product.Brand ?? summary.Brand,
+            Basis = product.Basis == "unknown" ? summary.Basis : product.Basis,
+            Calories = product.Calories ?? (sameBasis ? summary.Calories : null), Protein = product.Protein ?? (sameBasis ? summary.Protein : null),
+            Fat = product.Fat ?? (sameBasis ? summary.Fat : null), Carbs = product.Carbs ?? (sameBasis ? summary.Carbs : null), Details = details
+        };
     }
     private static async Task<T> Coalesce<T>(ConcurrentDictionary<string, Lazy<Task<T>>> requests, string key, Func<Task<T>> action, CancellationToken callerCancellation)
     {
@@ -124,7 +191,8 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
         static string? Plain(string? value, int max)
         {
             if (string.IsNullOrWhiteSpace(value)) return null;
-            return new string(value.Select(c => char.IsControl(c) ? ' ' : c).Take(max).ToArray()).Trim();
+            var clean = new string(FoodText.Decode(value).Select(c => char.IsControl(c) ? ' ' : c).Take(max).ToArray()).Trim();
+            return clean.Length > 0 ? clean : null;
         }
         static string? Brands(JsonElement product)
         {
@@ -132,17 +200,25 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
             return string.Join(", ", brands.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.String).Take(8).Select(item => Plain(item.GetString(), 120)).Where(item => item is not null).Distinct(StringComparer.OrdinalIgnoreCase));
         }
         var barcode = Text(product, "code");
-        if (barcode is null || barcode.Length is < 8 or > 14 || barcode.Any(c => !char.IsAsciiDigit(c))) return null;
-        var name = Plain(Text(product, "product_name_ru"), 200) ?? Plain(Text(product, "product_name_be"), 200) ?? Plain(Text(product, "product_name"), 200);
+        if (!FoodValidation.ValidOffCode(barcode)) return null;
+        barcode = FoodValidation.NormalizeOffCode(barcode!);
+        var name = Plain(Text(product, "product_name_ru"), 200) ?? Plain(Text(product, "product_name_be"), 200) ?? Plain(Text(product, "product_name"), 200)
+            ?? Plain(Text(product, "generic_name_ru"), 200) ?? Plain(Text(product, "product_name_en"), 200)
+            ?? Plain(Text(product, "generic_name"), 200) ?? Plain(Text(product, "generic_name_en"), 200);
         if (string.IsNullOrWhiteSpace(name)) name = "Продукт " + barcode;
         var values = ReadNutrition(product);
-        return new("off:" + barcode, barcode, name.Trim(), Plain(Brands(product), 120), null, values.Calories, values.Protein, values.Fat, values.Carbs, values.Basis, "openfoodfacts",
+        if (values.Calories is null && values is { Protein: { } protein, Fat: { } fat, Carbs: { } carbs } && protein + fat + carbs <= 105 &&
+            !Regex.IsMatch(name, @"пив|вин[оа]|водк|виск|коньяк|лик[её]р|\bром\b|beer|wine|whisk|vodka|liqueur|\brum\b", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(30)))
+            values = values with { Calories = decimal.Round(4 * protein + 9 * fat + 4 * carbs, 2),
+                Details = (values.Details ?? new() { Basis = values.Basis }) with { CaloriesEstimated = true } };
+        return new("off:" + barcode, FoodValidation.GtinOrNull(barcode!), name.Trim(), Plain(Brands(product), 120), null, values.Calories, values.Protein, values.Fat, values.Carbs, values.Basis, "openfoodfacts",
             "https://world.openfoodfacts.org/product/" + barcode, Text(product, "last_modified_t"))
-        { GramsPerMillilitre = ServingDensity(Text(product, "serving_size")) };
+        { GramsPerMillilitre = ServingDensity(Text(product, "serving_size")), Details = OffProductDetails.Metadata(product, values.Details ?? new() { Basis = values.Basis }) };
     }
 
     private sealed record NutritionValues(string Basis, decimal? Calories = null, decimal? Protein = null, decimal? Fat = null, decimal? Carbs = null)
     {
+        public FoodDetails? Details { get; init; }
         public bool HasValues => Calories is not null || Protein is not null || Fat is not null || Carbs is not null;
     }
     private static string? Text(JsonElement element, string key) => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(key, out var value)
@@ -176,7 +252,8 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
             {
                 var chosen = sets[0].Values!;
                 foreach (var additional in sets.Skip(1).Select(set => set.Values!).Where(set => set.Basis == chosen.Basis))
-                    chosen = chosen with { Calories = chosen.Calories ?? additional.Calories, Protein = chosen.Protein ?? additional.Protein, Fat = chosen.Fat ?? additional.Fat, Carbs = chosen.Carbs ?? additional.Carbs };
+                    chosen = chosen with { Calories = chosen.Calories ?? additional.Calories, Protein = chosen.Protein ?? additional.Protein, Fat = chosen.Fat ?? additional.Fat, Carbs = chosen.Carbs ?? additional.Carbs,
+                        Details = OffProductDetails.Merge(chosen.Details!, additional.Details!) };
                 return chosen;
             }
             if (nutrition.TryGetProperty("aggregated_set", out var aggregated) && Text(aggregated, "preparation") is "as_sold" or null && ReadSet(aggregated, product) is { HasValues: true } normalized)
@@ -187,10 +264,14 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
         var servingBasis = Unit(Text(product, "serving_quantity_unit"))?.Basis ?? QuantityBasis(Text(product, "serving_size"));
         // The legacy suffix *_100g covers both grams and millilitres. Resolve the
         // declared liquid unit, not a fictitious gram-to-millilitre density of 1.
-        var basis = per == "100ml" ? "100ml" : packageBasis ?? (per == "serving" ? servingBasis : per == "100g" ? servingBasis ?? "100g" : "unknown");
+        var basis = per == "100ml" ? "100ml" : packageBasis ?? (per == "serving" ? servingBasis : servingBasis ?? "100g");
         decimal? Value(string key, decimal max) => Number(legacy, key) is { } value && value <= max ? value : null;
+        var available = Value("carbohydrates_100g", 100);
+        if (available is null && Value("carbohydrates-total_100g", 100) is { } total && Value("fiber_100g", 100) is { } fiber && total >= fiber)
+            available = total - fiber;
         return new(basis ?? "unknown", Value("energy-kcal_100g", 1500) ?? Value("energy-kj_100g", 6276) / 4.184m,
-            Value("proteins_100g", 100), Value("fat_100g", 100), Value("carbohydrates_100g", 100));
+            Value("proteins_100g", 100), Value("fat_100g", 100), available)
+        { Details = OffProductDetails.Legacy(legacy, basis ?? "unknown") };
     }
     private static int SourcePriority(string? source) => source switch { "manufacturer" => 0, "packaging" => 1, "usda" => 2, "estimate" => 3, _ => 4 };
     private static NutritionValues? ReadSet(JsonElement set, JsonElement product)
@@ -221,8 +302,12 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
             try { var value = raw.Value * factor.Value * 100 / reference.Quantity; return value <= maximum ? value : null; }
             catch (OverflowException) { return null; }
         }
+        var available = Nutrient("carbohydrates", 100);
+        if (available is null && Nutrient("carbohydrates-total", 100) is { } total && Nutrient("fiber", 100) is { } fiber && total >= fiber)
+            available = total - fiber;
         return new(reference.Basis, Nutrient("energy-kcal", 1500, true) ?? Nutrient("energy-kj", 1500, true),
-            Nutrient("proteins", 100), Nutrient("fat", 100), Nutrient("carbohydrates", 100));
+            Nutrient("proteins", 100), Nutrient("fat", 100), available)
+        { Details = OffProductDetails.FromSet(nutrients, reference.Basis, reference.Quantity) };
     }
     private static decimal? ServingDensity(string? serving)
     {

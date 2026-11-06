@@ -27,12 +27,13 @@ internal sealed class CatalogClient(Guid profileId)
             DateTime.UtcNow >= certificate.NotBefore.ToUniversalTime() && DateTime.UtcNow <= certificate.NotAfter.ToUniversalTime() &&
             CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin);
         var client = new HttpClient(handler) { BaseAddress = Endpoint, Timeout = Timeout.InfiniteTimeSpan };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("SneakyFit/1.1.0 (Windows desktop)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("SneakyFit/1.2.0 (Windows desktop)");
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return client;
     }
     public Task<CatalogPage> Search(string query, int page, CancellationToken ct, IProgress<string>? progress = null) => Send<CatalogPage>(HttpMethod.Get, "api/catalog/search?q=" + Uri.EscapeDataString(query.Trim()) + "&page=" + page, null, ct, authenticated: false, progress: progress);
     public Task<CatalogProduct> Barcode(string barcode, CancellationToken ct) => Send<CatalogProduct>(HttpMethod.Get, "api/catalog/barcode/" + Uri.EscapeDataString(barcode.Trim()), null, ct, authenticated: false);
+    public Task<CatalogProduct> Product(string id, CancellationToken ct) => Send<CatalogProduct>(HttpMethod.Get, "api/catalog/product?id=" + Uri.EscapeDataString(id), null, ct, authenticated: false);
     public Task<PersonalProducts> Personal(CancellationToken ct) => Send<PersonalProducts>(HttpMethod.Get, "api/foods/personal", null, ct);
     public async Task<DeviceInvitation> InviteFriend(CancellationToken ct)
     {

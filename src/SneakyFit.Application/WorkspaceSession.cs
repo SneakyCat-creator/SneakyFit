@@ -56,8 +56,11 @@ public sealed class WorkspaceSession
         if (grams <= 0 || grams > 10000) throw new ArgumentException($"Укажите порцию до 10 000 {FoodUnits.Symbol(food.Unit)}.");
         if (kind == EntryKind.Eaten && date > DateOnly.FromDateTime(DateTime.Now)) throw new ArgumentException("Будущие приёмы пищи можно только запланировать.");
         var day = Day(date);
-        var entry = new FoodEntry(Guid.NewGuid(), new(food.Id, food.Name, food.Per100) { Unit = food.Unit, GramsPerMillilitre = food.GramsPerMillilitre }, grams, kind);
-        UpdateDay(day with { Meals = day.Meals.Select(m => m.TemplateId == templateId ? m with { Entries = [.. m.Entries, entry] } : m).ToList() });
+        var entry = new FoodEntry(Guid.NewGuid(), new(food.Id, food.Name, food.Per100) { Unit = food.Unit, GramsPerMillilitre = food.GramsPerMillilitre, Details = food.Details }, grams, kind) { AddedAt = DateTimeOffset.UtcNow };
+        if (!day.Meals.Any(m => m.TemplateId == templateId)) throw new ArgumentException("Приём пищи больше не найден.");
+        var foods = Data.Foods.Any(f => f.Id == food.Id) ? Data.Foods : [.. Data.Foods, food];
+        var updated = day with { Meals = day.Meals.Select(m => m.TemplateId == templateId ? m with { Entries = [.. m.Entries, entry] } : m).ToList() };
+        Commit(Data with { Foods = foods, Days = Data.Days.Where(d => d.Date != date).Append(updated).OrderBy(d => d.Date).ToList() });
     }
 
     public void RemoveEntry(DateOnly date, Guid entryId)
@@ -66,7 +69,7 @@ public sealed class WorkspaceSession
         UpdateDay(day with { Meals = day.Meals.Select(m => m with { Entries = m.Entries.Where(e => e.Id != entryId).ToList() }).ToList() });
     }
 
-    public void EditEntry(DateOnly date, Guid entryId, string name, Nutrition per100, decimal grams, EntryKind kind, FoodUnit? unit = null, decimal? gramsPerMillilitre = null)
+    public void EditEntry(DateOnly date, Guid entryId, string name, Nutrition per100, decimal grams, EntryKind kind, FoodUnit? unit = null, decimal? gramsPerMillilitre = null, FoodDetails? details = null)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 200) throw new ArgumentException("Введите название до 200 символов.");
         if (!Enum.IsDefined(kind) || kind == EntryKind.Eaten && date > DateOnly.FromDateTime(DateTime.Now)) throw new ArgumentException("Будущие приёмы можно только планировать.");
@@ -75,10 +78,11 @@ public sealed class WorkspaceSession
             ?? throw new ArgumentException("Запись больше не найдена.");
         if (unit is { } chosen && !Enum.IsDefined(chosen) || !FoodUnits.IsValidDensity(gramsPerMillilitre)) throw new ArgumentException("Проверьте единицу продукта.");
         if (grams <= 0 || grams > 10000) throw new ArgumentException($"Укажите порцию до 10 000 {FoodUnits.Symbol(existing.Food.Unit)}.");
-        if (per100.Calories is < 0 or > 1000 || new[] { per100.Protein, per100.Fat, per100.Carbs }.Any(n => n is < 0 or > 100)) throw new ArgumentException($"Проверьте КБЖУ на 100 {FoodUnits.Symbol(existing.Food.Unit)}.");
+        if (per100.Calories is < 0 or > 1500 || new[] { per100.Protein, per100.Fat, per100.Carbs }.Any(n => n is < 0 or > 100)) throw new ArgumentException($"Проверьте КБЖУ на 100 {FoodUnits.Symbol(existing.Food.Unit)}.");
+        if (!FoodDetails.IsValid(details)) throw new ArgumentException("Проверьте подробные данные продукта.");
         // Only this serving changes; catalog products, recipes and other dates keep their snapshots.
         UpdateDay(day with { Meals = day.Meals.Select(m => m with { Entries = m.Entries.Select(e => e.Id == entryId
-            ? e with { Food = e.Food with { Name = name.Trim(), Per100 = per100, Unit = unit ?? e.Food.Unit, GramsPerMillilitre = gramsPerMillilitre ?? e.Food.GramsPerMillilitre }, Grams = grams, Kind = kind } : e).ToList() }).ToList() });
+            ? e with { Food = e.Food with { Name = name.Trim(), Per100 = per100, Unit = unit ?? e.Food.Unit, GramsPerMillilitre = gramsPerMillilitre ?? e.Food.GramsPerMillilitre, Details = details ?? e.Food.Details }, Grams = grams, Kind = kind } : e).ToList() }).ToList() });
     }
 
     public void EatPlannedMeal(DateOnly date, Guid templateId)
@@ -99,15 +103,20 @@ public sealed class WorkspaceSession
         foreach (var meal in source.Meals.Where(m => m.Entries.Count > 0))
         {
             var index = meals.FindIndex(m => m.TemplateId == meal.TemplateId || m.Name == meal.Name);
-            var entries = meal.Entries.Select(e => e with { Id = Guid.NewGuid(), Kind = EntryKind.Planned }).ToList();
+            var entries = meal.Entries.Select(e => e with { Id = Guid.NewGuid(), Kind = EntryKind.Planned, AddedAt = DateTimeOffset.UtcNow }).ToList();
             if (index >= 0) meals[index] = meals[index] with { Entries = [.. meals[index].Entries, .. entries] };
             else meals.Add(meal with { Id = Guid.NewGuid(), Entries = entries });
         }
         UpdateDay(destination with { Meals = meals });
     }
 
+    public List<Guid> RecentFoodIds() => Data.Days.SelectMany(day => day.Meals.SelectMany(meal => meal.Entries
+        .Select(entry => (Entry: entry, RecordedAt: entry.AddedAt ?? new DateTimeOffset(day.Date.ToDateTime(meal.Time), TimeSpan.Zero)))))
+        .OrderByDescending(item => item.RecordedAt).Select(item => item.Entry.Food.SourceFoodId).Distinct().ToList();
+
     public void SaveFood(Food food)
     {
+        if (!FoodDetails.IsValid(food.Details)) throw new ArgumentException("Проверьте подробные данные продукта.");
         if (!Enum.IsDefined(food.Unit) || !FoodUnits.AreValidServings(food.Servings) || !FoodUnits.IsValidDensity(food.GramsPerMillilitre)) throw new ArgumentException("Проверьте единицу продукта и порции.");
         if (food.Recipe is { } recipe)
         {
@@ -117,7 +126,10 @@ public sealed class WorkspaceSession
                 recipe.Ingredients.Any(i => i is null || i.Food is null || !Enum.IsDefined(i.Food.Unit) || !FoodUnits.IsValidDensity(i.Food.GramsPerMillilitre) ||
                     i.Grams <= 0 || i.Grams > 100000 || new[] { i.Food.Per100.Calories, i.Food.Per100.Protein, i.Food.Per100.Fat, i.Food.Per100.Carbs }.Any(v => v < 0)))
                 throw new ArgumentException("Проверьте ингредиенты и количество готового блюда.");
-            food = food with { Unit = recipe.Unit, Per100 = recipe.Per100 };
+            food = food with { Unit = recipe.Unit, Per100 = recipe.Per100, Details = FoodDetails.ForRecipe(recipe) };
+            if (!FoodDetails.IsValid(food.Details) || food.Per100.Calories > 1500 ||
+                food.Per100.Protein + food.Per100.Fat + food.Per100.Carbs > 105)
+                throw new ArgumentException("Проверьте вес готового блюда и количество ингредиентов.");
         }
         if (string.IsNullOrWhiteSpace(food.Name)) throw new ArgumentException("Введите название блюда.");
         if (new[] { food.Per100.Calories, food.Per100.Protein, food.Per100.Fat, food.Per100.Carbs }.Any(v => v < 0)) throw new ArgumentException("КБЖУ не могут быть отрицательными.");
@@ -147,6 +159,7 @@ public sealed class WorkspaceSession
         {
             Id = existing.Id, Favorite = existing.Favorite,
             Servings = imported.Unit == existing.Unit ? existing.Servings.ToList() : [],
+            Details = imported.Details ?? existing.Details,
             GramsPerMillilitre = imported.GramsPerMillilitre ?? existing.GramsPerMillilitre
         };
         SaveFood(imported);
@@ -164,6 +177,7 @@ public sealed class WorkspaceSession
             {
                 Id = foods[index].Id, Favorite = foods[index].Favorite,
                 Servings = food.Unit == foods[index].Unit ? foods[index].Servings.ToList() : [],
+                Details = food.Details ?? foods[index].Details,
                 GramsPerMillilitre = food.GramsPerMillilitre ?? foods[index].GramsPerMillilitre
             };
         }

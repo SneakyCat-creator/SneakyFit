@@ -119,7 +119,7 @@ static string? Operation(HttpContext context)
     if (key.Length > 80 || key.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))) throw new ApiException(400, "Некорректный ключ операции.");
     return key;
 }
-app.MapGet("/healthz", () => new { status = "ok", customFoodBasis = true, foodUnits = new[] { "100g", "100ml" } });
+app.MapGet("/healthz", () => new { status = "ok", customFoodBasis = true, productDetails = true, foodUnits = new[] { "100g", "100ml" } });
 app.MapPost("/api/devices/enroll", (EnrollmentRequest request, Store db) => db.Enroll(request)).AllowAnonymous().RequireRateLimiting("enrollment");
 app.MapPost("/api/devices/invite", (HttpContext context, Store db) => new { invite = db.CreateDeviceInvite(User(context)), expiresInSeconds = 86400 });
 app.MapPost("/api/users/invite", (HttpContext context, Store db) => new { invite = db.CreateFriendInvite(User(context)), expiresInSeconds = 86400 });
@@ -128,12 +128,19 @@ app.MapGet("/api/catalog/search", async (string? q, int? page, IExternalCatalog 
     var query = FoodValidation.Text(q, "Поиск", 120, true); var number = page ?? 1;
     if (query.Length < 2 || number is < 1 or > 10000) throw new ApiException(400, "Введите минимум два символа и корректную страницу.");
     var local = db.SearchCustom(query, number); var external = await off.Search(query, number, cancellation);
-    return new SearchResult(local.Take(20).Concat(external.Products).DistinctBy(p => p.Id).ToArray(), local.Count > 20 || external.HasMore, external.Warning);
+    return new SearchResult(local.Take(20).Concat(external.Products).Where(CatalogQuality.Usable).DistinctBy(p => p.Id).ToArray(), local.Count > 20 || external.HasMore, external.Warning);
 }).AllowAnonymous().RequireRateLimiting("catalog");
 app.MapGet("/api/catalog/barcode/{code}", async (string code, IExternalCatalog off, Store db, CancellationToken cancellation) =>
 {
     var barcode = FoodValidation.CanonicalBarcode(code);
     return db.CustomByBarcode(barcode) ?? await off.Barcode(barcode, cancellation) ?? throw new ApiException(404, "Продукт со штрихкодом не найден.");
+}).AllowAnonymous().RequireRateLimiting("catalog");
+// OFF record identifiers are not necessarily retail GTINs. Never apply a scanner checksum to a catalog link.
+app.MapGet("/api/catalog/product", async (string id, IExternalCatalog off, Store db, CancellationToken cancellation) =>
+{
+    if (!FoodValidation.ValidId(id)) throw new ApiException(400, "Неизвестный идентификатор продукта.");
+    return (id.StartsWith("custom:", StringComparison.Ordinal) ? db.GetCustom(id) : await off.Barcode(id[4..], cancellation))
+        ?? throw new ApiException(404, "Карточка больше недоступна. Выберите другой продукт.");
 }).AllowAnonymous().RequireRateLimiting("catalog");
 app.MapPost("/api/foods/custom", async (CustomFoodRequest request, HttpContext context, IExternalCatalog off, Store db, CancellationToken cancellation) =>
 {
@@ -146,10 +153,14 @@ app.MapPut("/api/foods/personal", async (CatalogProduct product, HttpContext con
 {
     product = FoodValidation.Product(product);
     if (!FoodValidation.ValidId(product.Id)) throw new ApiException(400, "Неизвестный идентификатор продукта.");
-    var canonical = product.Id.StartsWith("custom:", StringComparison.Ordinal) ? db.GetCustom(product.Id)
-        : await off.Barcode(FoodValidation.CanonicalBarcode(product.Id[4..]), cancellation);
+    var previous = db.PersonalProduct(User(context), product.Id);
+    // A user's existing private copy remains editable when its public source disappears.
+    var canonical = previous ?? (product.Id.StartsWith("custom:", StringComparison.Ordinal) ? db.GetCustom(product.Id)
+        : await off.Barcode(product.Id[4..], cancellation));
     if (canonical is null) throw new ApiException(404, "Продукт не найден в каталоге.");
     var revision = context.Request.Headers.IfMatch.ToString().Trim('"');
+    var priorDetails = previous?.Details;
+    product = product with { Details = product.Details ?? (priorDetails?.Basis == product.Basis ? priorDetails : null) ?? (canonical.Basis == product.Basis ? canonical.Details : null) };
     var saved = db.SavePersonal(User(context), product with { Id = canonical.Id, Barcode = canonical.Barcode, Source = canonical.Source, SourceUrl = canonical.SourceUrl }, revision.Length == 0 ? null : revision);
     context.Response.Headers.ETag = '"' + saved.Revision + '"'; return saved;
 });

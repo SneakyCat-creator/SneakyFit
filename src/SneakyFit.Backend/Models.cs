@@ -1,3 +1,4 @@
+using SneakyFit.Domain;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -10,11 +11,16 @@ public sealed record CatalogProduct(string Id, string? Barcode, string Name, str
     decimal? Calories, decimal? Protein, decimal? Fat, decimal? Carbs, string Basis, string Source, string? SourceUrl, string? Revision)
 {
     public decimal? GramsPerMillilitre { get; init; }
+    public FoodDetails? Details { get; init; }
+    public bool PersonalEdited { get; init; }
 }
 public sealed record SearchResult(IReadOnlyList<CatalogProduct> Products, bool HasMore, string? Warning = null);
 public sealed record CustomFoodRequest(string Name, string? Brand, string? Preparation, string? Barcode,
     [property: JsonRequired] decimal Calories, [property: JsonRequired] decimal Protein, [property: JsonRequired] decimal Fat, [property: JsonRequired] decimal Carbs,
-    string Basis = "100g");
+    string Basis = "100g")
+{
+    public FoodDetails? Details { get; init; }
+}
 public sealed record CustomFoodResult(CatalogProduct Product, CatalogProduct Personal, bool Matched);
 public sealed record EnrollmentRequest(string Invite, string DeviceName);
 public sealed record EnrollmentResult(string Token, string UserId);
@@ -65,11 +71,12 @@ public static partial class FoodValidation
         if (request.Basis is not ("100g" or "100ml")) throw new ApiException(400, "Выберите КБЖУ на 100 г или 100 мл.");
         var food = new CatalogProduct("", string.IsNullOrWhiteSpace(request.Barcode) ? null : CanonicalBarcode(request.Barcode),
             Text(request.Name, "Название", 200, true), Optional(request.Brand, "Марка", 120), Optional(request.Preparation, "Приготовление", 120),
-            request.Calories, request.Protein, request.Fat, request.Carbs, request.Basis, "community", null, null);
+            request.Calories, request.Protein, request.Fat, request.Carbs, request.Basis, "community", null, null) { Details = request.Details, PersonalEdited = true };
         return Product(food, requireNutrition: true);
     }
     public static CatalogProduct Product(CatalogProduct food, bool requireNutrition = false)
     {
+        if (!FoodDetails.IsValid(food.Details) || food.Details is { } details && details.Basis != food.Basis) throw new ApiException(400, "Проверьте подробные данные продукта.");
         if (food.GramsPerMillilitre is < .01m or > 25m) throw new ApiException(400, "Проверьте вес 100 мл продукта.");
         if (food.Basis is not ("100g" or "100ml" or "unknown")) throw new ApiException(400, "Неизвестная единица пищевой ценности.");
         static void Nutrient(decimal? value, decimal maximum, bool required)
@@ -82,6 +89,18 @@ public static partial class FoodValidation
         if (food.Protein + food.Fat + food.Carbs > 105) throw new ApiException(400, "Сумма БЖУ не может превышать 100 г с учётом округления.");
         return food with { Name = Text(food.Name, "Название", 200, true), Brand = Optional(food.Brand, "Марка", 120), Preparation = Optional(food.Preparation, "Приготовление", 120) };
     }
-    public static bool ValidId(string? id) => id is not null && (id.StartsWith("custom:", StringComparison.Ordinal) && Guid.TryParseExact(id[7..], "N", out _) || id.StartsWith("off:", StringComparison.Ordinal) && id.Length is >= 12 and <= 18 && id[4..].All(char.IsAsciiDigit));
+    public static bool ValidId(string? id) => id is not null && (id.StartsWith("custom:", StringComparison.Ordinal) && Guid.TryParseExact(id[7..], "N", out _) || id.StartsWith("off:", StringComparison.Ordinal) && ValidOffCode(id[4..]));
+    public static bool ValidOffCode(string? code) => code is { Length: >= 4 and <= 24 } && code.All(char.IsAsciiDigit);
+    public static string NormalizeOffCode(string code)
+    {
+        if (!ValidOffCode(code)) throw new ApiException(400, "Неизвестный идентификатор продукта.");
+        // OFF search can drop leading zeroes; its product API restores an 8- or 13-digit key.
+        var significant = code.TrimStart('0');
+        return significant.Length <= 8 ? significant.PadLeft(8, '0') : significant.Length < 13 ? significant.PadLeft(13, '0') : significant;
+    }
+    public static string? GtinOrNull(string code)
+    {
+        try { return CanonicalBarcode(code); } catch (ApiException) { return null; }
+    }
     [GeneratedRegex(@"\s+")] private static partial Regex WhiteSpace();
 }

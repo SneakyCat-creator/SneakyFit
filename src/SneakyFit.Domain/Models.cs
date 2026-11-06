@@ -46,6 +46,8 @@ public sealed record Food(Guid Id, string Name, string Category, Nutrition Per10
     public decimal? GramsPerMillilitre { get; init; }
     public List<FoodServing> Servings { get; init; } = [];
     public RecipeDefinition? Recipe { get; init; }
+    public FoodDetails? Details { get; init; }
+    public bool CatalogModified { get; init; }
     public string? CatalogId { get; init; }
     public string? CatalogSource { get; init; }
     public string? Barcode { get; init; }
@@ -56,11 +58,13 @@ public sealed record Food(Guid Id, string Name, string Category, Nutrition Per10
 }
 public sealed record FoodSnapshot(Guid SourceFoodId, string Name, Nutrition Per100)
 {
+    public FoodDetails? Details { get; init; }
     public FoodUnit Unit { get; init; } = FoodUnit.Grams;
     public decimal? GramsPerMillilitre { get; init; }
 }
 public sealed record FoodEntry(Guid Id, FoodSnapshot Food, decimal Grams, EntryKind Kind)
 {
+    public DateTimeOffset? AddedAt { get; init; }
     // Grams is retained as the serialized amount field for existing profiles.
     public Nutrition Nutrition => Food.Per100.ForAmount(Grams);
 }
