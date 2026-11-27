@@ -69,11 +69,29 @@ public partial class MainWindow
                 select.Content = Between(S(T(food.Name, BodySize, Ink, true), M(T(N(food.Per100.Calories) + " ккал / 100 " + FoodUnits.Symbol(food.Unit), CaptionSize, Muted), top: 4)), T("+", PageHeadingSize, Purple)); results.Children.Add(M(select, bottom: 9));
             }
         }
-        query.TextChanged += (_, _) => Draw(); Draw(); Drawer("Добавить еду", body, H(Btn("▥  Штрихкод", () => OnlineBarcodeDrawer(SelectFood)), M(Btn("+  Своё блюдо", () => NewSharedFoodDrawer(day, mealId, planned)), left: 10)));
+        query.TextChanged += (_, _) => Draw(); Draw();
+        var actions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
+        actions.Children.Add(Btn("▥  Штрихкод", () => OnlineBarcodeDrawer(day, mealId, planned)));
+        actions.Children.Add(M(Btn("+  Своё блюдо", () => NewSharedFoodDrawer(day, mealId, planned)), left: 10));
+        if (_session.Day(day).Meals.FirstOrDefault(m => m.TemplateId == mealId) is { } meal)
+        {
+            var toggle = Btn(meal.IsSkipped ? "Возобновить приём" : "Пропустить приём", () => Safe(() =>
+            {
+                _session.SetMealSkipped(day, meal.TemplateId, !meal.IsSkipped);
+                CloseDrawer();
+            }), "#F1EDF7", "#65546F");
+            toggle.FontSize = BodySize; toggle.Padding = new Thickness(11, 5, 11, 5);
+            actions.Children.Add(M(toggle, left: 10));
+        }
+        Drawer("Добавить еду", body, actions);
         if (_session.Data.Foods.Count > 0) query.Focus();
     }
     private void NewFoodDrawer() => NewSharedFoodDrawer();
     private void BarcodeDrawer() => OnlineBarcodeDrawer();
+
+    private Button MealAction(DateOnly date, Meal meal, string background, string foreground = Purple) =>
+        meal.IsSkipped ? Btn("Возобновить приём", () => Safe(() => _session.SetMealSkipped(date, meal.TemplateId, false)), background, foreground)
+            : Btn("+  Добавить", () => FoodDrawer(meal.TemplateId, date, date > DateOnly.FromDateTime(DateTime.Now)), background, foreground);
 
     private void RecipeDrawer(Food? existing = null)
     {

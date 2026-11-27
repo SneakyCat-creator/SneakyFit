@@ -6,7 +6,7 @@
     <AssemblyName>SneakyFit</AssemblyName>
     <RootNamespace>SneakyFit.Desktop</RootNamespace>
     <Product>SneakyFit</Product>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets/SneakyFit.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

@@ -14,7 +14,7 @@ public static class ActivityIndex
 
     public static DailyActivityIndex? ForDay(Workspace data, DiaryDay day)
     {
-        if (day.Date > DateOnly.FromDateTime(DateTime.Now) || day.Activities.Count == 0 || GoalForDay(data, day) is not { } goal) return null;
+        if (day.Date > DateOnly.FromDateTime(DateTime.Now) || !day.RecordedActivities.Any() || GoalForDay(data, day) is not { } goal) return null;
         var steps = StepPoints(day, goal.StepPointsPer1000);
         var workouts = WorkoutPoints(day);
         var percent = (int)Math.Floor(Math.Clamp((steps + workouts) / goal.TargetPoints * 100, 0, 100));
@@ -30,7 +30,7 @@ public static class ActivityIndex
 
         // Only recorded, completed dates teach the goal. Missing days are not inactivity.
         var observations = new List<decimal>();
-        foreach (var past in data.Days.Where(d => d.Date < day.Date && d.Date >= day.Date.AddDays(-HistoryDays) && d.Activities.Count > 0))
+        foreach (var past in data.Days.Where(d => d.Date < day.Date && d.Date >= day.Date.AddDays(-HistoryDays) && d.RecordedActivities.Any()))
         {
             var basis = past.ActivityGoal is { IsValid: true } snapshot ? snapshot : ReferenceForDay(data, past.Date);
             if (basis is null) continue;
@@ -51,7 +51,7 @@ public static class ActivityIndex
     public static Workspace FreezeGoals(Workspace data)
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
-        var pending = data.Days.Where(d => d.Date <= today && d.Activities.Count > 0 && d.ActivityGoal is not { IsValid: true })
+        var pending = data.Days.Where(d => d.Date <= today && d.RecordedActivities.Any() && d.ActivityGoal is not { IsValid: true })
             .OrderBy(d => d.Date).ToArray();
         foreach (var day in pending)
         {
@@ -63,22 +63,21 @@ public static class ActivityIndex
 
     private static ActivityGoalSnapshot? ReferenceForDay(Workspace data, DateOnly date)
     {
-        var estimate = SmartTargets.Estimate(data, date);
-        if (!estimate.Target.Automatic || estimate.Target.MaintenanceCalories is not > 0 ||
-            SmartTargets.WeightAt(data, date) is not > 0) return null;
+        if (SmartTargets.ActivityWeightAt(data, date) is not { } weight) return null;
+        var estimate = SmartTargets.Estimate(data, date, weight);
+        if (!estimate.Target.Automatic || estimate.Target.MaintenanceCalories is not > 0) return null;
 
-        // A product goal, not a medical PAL score or a prescription. Count all walking
-        // here; the calorie budget still credits only movement above its own baseline.
+        // The activity goal uses the automatic walking rate independently of the diary's manual rate.
         var reference = Math.Clamp(estimate.Target.MaintenanceCalories.Value / 1.2m * .15m, 100m, 400m);
-        var stepRate = Math.Round(SmartTargets.WeightAt(data, date)!.Value * .0005m * data.Profile.HeightCm * .414m * 10, 1);
+        var stepRate = SmartTargets.WalkingRate(weight, data.Profile.HeightCm);
         return stepRate > 0 ? new(reference, reference, stepRate, 0) : null;
     }
 
     private static decimal StepPoints(DiaryDay day, decimal rate) =>
-        day.Activities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => (decimal)Math.Max(0, a.Steps)) * rate / 1000;
+        day.RecordedActivities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => (decimal)Math.Max(0, a.Steps)) * rate / 1000;
 
     private static decimal WorkoutPoints(DiaryDay day) =>
-        day.Activities.Where(a => a.Kind == ActivityKind.Workout).Sum(a => Math.Max(0, a.EstimatedCalories));
+        day.RecordedActivities.Where(a => a.Kind == ActivityKind.Workout).Sum(a => Math.Max(0, a.EstimatedCalories ?? 0));
 
     private static decimal Median(List<decimal> sorted) => sorted.Count % 2 == 0
         ? (sorted[sorted.Count / 2 - 1] + sorted[sorted.Count / 2]) / 2 : sorted[sorted.Count / 2];

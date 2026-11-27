@@ -57,18 +57,20 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
 
     public Task<SearchResult> Search(string query, int page, CancellationToken cancellationToken)
     {
-        var key = $"search:details-v5:{query.ToLowerInvariant()}:{page}";
+        var literal = CatalogSearch.Literal(query);
+        if (literal.Length < 2) throw new ApiException(400, "Введите название продукта.");
+        var key = $"search:terms-v6:{literal}:{page}";
         SearchResult WithoutMissing(SearchResult result) => result with { Products = result.Products
             .Where(p => cache.Read<ProductResult>("barcode:details-v5:" + p.Id[4..]) is not { Product: null }).ToArray() };
         var cached = cache.Read<SearchResult>(key); if (cached is not null) return Task.FromResult(WithoutMissing(cached));
         return Coalesce(_searches, key, async () =>
         {
             if (cache.Read<SearchResult>(key) is { } saved) return WithoutMissing(saved);
-            var primary = await SearchSource(query, page);
+            var primary = await SearchSource(literal, page);
             var candidates = primary.Products.ToList();
             var hasMore = primary.HasMore;
-            var variantKey = "spellings:details-v5:" + query.ToLowerInvariant();
-            var variants = page == 1 ? (!primary.HasMore && candidates.Count < 8 ? CatalogSearch.Spellings(query).ToArray() : [])
+            var variantKey = "terms-v6:" + literal;
+            var variants = page == 1 ? (!primary.HasMore && candidates.Count < 8 ? CatalogSearch.Alternatives(query).ToArray() : [])
                 : cache.Read<string[]>(variantKey) ?? [];
             var usedVariants = new List<string>();
             // Search remains worldwide: a Russian label may belong to any country.
@@ -95,13 +97,10 @@ public sealed class OffCatalog(HttpClient http, OffCache cache, string userAgent
             cache.Write(key, result, TimeSpan.FromSeconds(90)); return result;
         }, cancellationToken);
     }
-    private async Task<SearchResult> SearchSource(string query, int page)
+    private async Task<SearchResult> SearchSource(string expression, int page)
     {
         _searchBudget.Take();
-        // Do not interpret a product name as a Lucene expression (quotes, brackets, etc.).
-        var literal = Regex.Replace(FoodText.Decode(query), @"[^\p{L}\p{N}\s]", " ").Trim();
-        if (literal.Length < 2) throw new ApiException(400, "Введите название продукта.");
-        using var document = await Read(new Uri($"https://search.openfoodfacts.org/search?q={Uri.EscapeDataString(literal)}&page={page}&page_size={PageSize}&langs=ru,be,en&fields={Fields}"));
+        using var document = await Read(new Uri($"https://search.openfoodfacts.org/search?q={Uri.EscapeDataString(expression)}&page={page}&page_size={PageSize}&langs=ru,be,en&fields={Fields}"));
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("hits", out var products) || products.ValueKind != JsonValueKind.Array) throw new ApiException(502, "Open Food Facts вернул неполный ответ.");
         var count = NonNegativeInteger(root, "count"); var pages = NonNegativeInteger(root, "page_count");

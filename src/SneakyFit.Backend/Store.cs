@@ -160,12 +160,24 @@ public sealed class Store
     }
     public IReadOnlyList<CatalogProduct> SearchCustom(string query, int page, int size = 20)
     {
-        // A normalized identity substring is enough for the small shared family catalog;
-        // OFF stays in a separately licensed/cache-only database.
-        var term = FoodValidation.Normalize(query).Replace("!", "!!").Replace("%", "!%").Replace("_", "!_");
-        using var db = Open(); using var command = Command(db,
-            "SELECT body FROM custom_products WHERE search_text LIKE $term ESCAPE '!' ORDER BY created_at DESC,id LIMIT $limit OFFSET $offset", null,
-            ("$term", "%" + term + "%"), ("$limit", size + 1), ("$offset", (page - 1) * size));
+        using var db = Open(); using var command = db.CreateCommand();
+        var clauses = new List<string>();
+        foreach (var spellings in CatalogSearch.WordSpellings(query))
+        {
+            var alternatives = new List<string>();
+            foreach (var spelling in spellings)
+            {
+                var parameter = "$word" + command.Parameters.Count;
+                command.Parameters.AddWithValue(parameter, FoodValidation.Normalize(spelling));
+                alternatives.Add($"instr(search_text, {parameter}) > 0");
+            }
+            clauses.Add("(" + string.Join(" OR ", alternatives) + ")");
+        }
+        if (clauses.Count == 0) return [];
+        command.CommandText = "SELECT body FROM custom_products WHERE " + string.Join(" AND ", clauses) +
+            " ORDER BY (instr(search_text, $phrase) > 0) DESC,created_at DESC,id LIMIT $limit OFFSET $offset";
+        command.Parameters.AddWithValue("$phrase", FoodValidation.Normalize(query));
+        command.Parameters.AddWithValue("$limit", size + 1); command.Parameters.AddWithValue("$offset", (page - 1) * size);
         using var reader = command.ExecuteReader(); var result = new List<CatalogProduct>(); while (reader.Read()) result.Add(JsonSerializer.Deserialize<CatalogProduct>(reader.GetString(0), JsonDefaults.Options)!); return result;
     }
     public CustomFoodResult CreateCustom(string userId, CatalogProduct requested, string? operationKey = null, CatalogProduct? externalCanonical = null)

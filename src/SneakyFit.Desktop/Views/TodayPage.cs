@@ -17,27 +17,40 @@ public partial class MainWindow
         var numbers = H(T(N(total.Calories), _compactDiary ? LargeMetricSize : HeroSize, "#FFFFFF", true), M(T("/ " + N(budget), _compactDiary ? HeadingSize : PageHeadingSize, "#D5C1FA"), top: _compactDiary ? 16 : 24, left: 9));
         var ring = new Grid { Width = 178, Height = 178, LayoutTransform = new ScaleTransform(ringScale, ringScale) }; ring.Children.Add(new EnergyRing { Fraction = (double)(total.Calories / budget) });
         var ringText = S(T(N(total.Calories / budget * 100) + "%", MetricSize, "#FFFFFF", true), T(future ? "в плане" : "съедено", CaptionSize, "#E5D8FA")); ringText.HorizontalAlignment = HorizontalAlignment.Center; ringText.VerticalAlignment = VerticalAlignment.Center; foreach (TextBlock text in ringText.Children) text.TextAlignment = TextAlignment.Center; ring.Children.Add(ringText);
-        var balance = Tag((remaining < 0 ? "Сверх нормы  " : "Осталось  ") + N(Math.Abs(remaining)) + " ккал", "#DFEFB8", "#426545");
+        var balanceText = T((remaining < 0 ? "Сверх нормы " : "Осталось ") + N(Math.Abs(remaining)) + " ккал",
+            _compactDiary ? BodySize : SubheadingSize, "#365A38", true);
+        balanceText.TextWrapping = TextWrapping.NoWrap;
+        var balance = new Border
+        {
+            Child = new Viewbox { Child = balanceText, StretchDirection = StretchDirection.DownOnly },
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+            Background = B("#DFEFB8"), Padding = new Thickness(14, 7, 14, 7), CornerRadius = new CornerRadius(12)
+        };
         UIElement Macro(string name, decimal value, decimal target, string color) => S(T(name, CaptionSize, "#E2D6F9"), M(H(T(N(value), PageHeadingSize, "#FFFFFF", true), M(T("/ " + N(target) + " г", CaptionSize, "#D7C6F5"), left: 5, top: 7)), top: 5, bottom: 10), Progress(value, target, color, "#956BDB", 8));
         var macroPanel = Equal(Macro("Белки", total.Protein, norm.Protein, "#CEFFB3"), Macro("Жиры", total.Fat, norm.Fat, "#FFDBAB"), Macro("Углеводы", total.Carbs, norm.Carbs, "#D7D3FF")); macroPanel.VerticalAlignment = VerticalAlignment.Center;
         var index = future ? null : SneakyFit.Application.ActivityIndex.ForDay(_session.Data, day);
         var activity = new Grid { Width = 178, Height = 178, LayoutTransform = new ScaleTransform(ringScale, ringScale), VerticalAlignment = VerticalAlignment.Center };
         activity.Children.Add(new EnergyRing { Fraction = index?.Fraction ?? 0, FillColor = "#BDF4DD" });
-        var activityText = S(T(index is null ? "—" : index.Percent + "%", MetricSize, "#FFFFFF", true), T("активность", CaptionSize, "#E5D8FA"));
+        var activityText = S(T(index is null ? "—" : index.Percent + "%", MetricSize, "#FFFFFF", true), T(future ? "план активности" : "активность", CaptionSize, "#E5D8FA"));
         activityText.HorizontalAlignment = HorizontalAlignment.Center; activityText.VerticalAlignment = VerticalAlignment.Center;
         foreach (TextBlock text in activityText.Children) text.TextAlignment = TextAlignment.Center;
         activity.Children.Add(activityText);
-        var indexButton = new CircularActionButton { Content = activity, IsEnabled = !future };
+        var indexButton = new CircularActionButton { Content = activity };
         indexButton.Click += (_, _) => ActivityDrawer();
-        System.Windows.Automation.AutomationProperties.SetName(indexButton, "Индекс активности " + (index is null ? "нет данных" : index.Percent + "%"));
+        System.Windows.Automation.AutomationProperties.SetName(indexButton, future ? "Запланировать активность" : "Индекс активности " + (index is null ? "нет данных" : index.Percent + "%"));
         var circles = H(indexButton, M(ring, left: 12)); circles.VerticalAlignment = VerticalAlignment.Center;
         var energy = new Grid(); energy.ColumnDefinitions.Add(new() { Width = new GridLength(1.05, GridUnitType.Star) }); energy.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); energy.ColumnDefinitions.Add(new() { Width = new GridLength(1.65, GridUnitType.Star) });
-        energy.Children.Add(M(S(T(future ? "Запланировано" : "Калории", BodySize, "#E9DDFB"), numbers, M(balance, top: _compactDiary ? 6 : 14)), right: 16));
+        var calorieColumn = S(T(future ? "Запланировано" : "Калории", BodySize, "#E9DDFB"), numbers, M(balance, top: _compactDiary ? 6 : 10));
+        calorieColumn.VerticalAlignment = VerticalAlignment.Center;
+        energy.Children.Add(M(calorieColumn, right: 16));
         Grid.SetColumn(circles, 1); energy.Children.Add(circles); var macros = M(macroPanel, left: 26); Grid.SetColumn(macros, 2); energy.Children.Add(macros);
         var energySurface = Surface(energy, pad: _compactDiary ? 16 : 24, radius: 29); energySurface.Background = new LinearGradientBrush((Color)ColorConverter.ConvertFromString("#A065E9"), (Color)ColorConverter.ConvertFromString("#7050CE"), 18); energySurface.MinHeight = _compactDiary ? 152 : 188;
         GiveDepth(energySurface, 16, .2);
         root.Children.Add(M(energySurface, bottom: _compactDiary ? 10 : 18));
-        var steps = day.Activities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => a.Steps); var workout = day.Activities.Where(a => a.Kind == ActivityKind.Workout).Sum(a => a.Minutes);
+        var steps = day.RecordedActivities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => a.Steps); var workout = day.RecordedActivities.Where(a => a.Kind == ActivityKind.Workout).Sum(a => a.Minutes);
+        string Credit(ActivityKind kind) => day.RecordedActivities.Any(a => a.Kind == kind && a.EstimatedCalories is null)
+            ? kind == ActivityKind.Steps ? "Настроить расчёт" : "—"
+            : ActivityEnergy(day.ActivityCalories(kind), "+");
         var ledger = BalanceLedger.Before(_session.Data.Days, date);
         UIElement ActivityPart(string icon, string label, string number)
         {
@@ -46,7 +59,7 @@ public partial class MainWindow
         if (!future)
         {
             var segments = new Grid();
-            UIElement[] items = [ActivityPart("\uE805", steps.ToString("N0", Ru) + " шагов", "+" + N(day.ActivityCalories(ActivityKind.Steps)) + " ккал"), ActivityPart("workout", workout > 0 ? workout + " мин тренировки" : "Тренировка", workout > 0 ? "+" + N(day.ActivityCalories(ActivityKind.Workout)) + " ккал" : "—"), ActivityPart("\uE8D4", "Баланс недели", Sign(ledger.FoodReserve) + " ккал")];
+            UIElement[] items = [ActivityPart("\uE805", steps.ToString("N0", Ru) + " шагов", Credit(ActivityKind.Steps)), ActivityPart("workout", workout > 0 ? workout + " мин тренировки" : "Тренировка", workout > 0 ? Credit(ActivityKind.Workout) : "—"), ActivityPart("\uE8D4", "Баланс недели", Sign(ledger.FoodReserve) + " ккал")];
             for (var i = 0; i < items.Length; i++)
             {
                 segments.ColumnDefinitions.Add(new());
@@ -75,23 +88,25 @@ public partial class MainWindow
         content.RowDefinitions.Add(new() { Height = GridLength.Auto });
         content.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         content.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var text = S(Between(T(meal.Name, HeadingSize, Ink, true), Tag(meal.Time.ToString("HH:mm"), "#85FFFFFF", "#65546F")), M(H(T(N(total.Calories), MetricSize, Ink, true), M(T("ккал", CaptionSize, "#65546F"), left: 6, top: 14)), top: 12)); content.Children.Add(text);
+        UIElement summary = meal.IsSkipped ? T("Приём пропущен", SubheadingSize, "#65546F", true) :
+            H(T(N(total.Calories), MetricSize, Ink, true), M(T("ккал", CaptionSize, "#65546F"), left: 6, top: 14));
+        var text = S(Between(T(meal.Name, HeadingSize, Ink, true), Tag(meal.Time.ToString("HH:mm"), "#85FFFFFF", "#65546F")), M(summary, top: 12)); content.Children.Add(text);
         var entries = S(); var entryScroll = new ScrollViewer { Content = entries, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Margin = new Thickness(0, 12, 0, 0), PanningMode = PanningMode.VerticalOnly }; Grid.SetRow(entryScroll, 1); content.Children.Add(entryScroll);
-        foreach (var entry in meal.Entries)
+        foreach (var entry in meal.ActiveEntries)
         {
             var row = S(T(entry.Food.Name, BodySize, Ink, true), M(T(N(entry.Grams, "0.##") + " " + FoodUnits.Symbol(entry.Food.Unit) + " · " + N(entry.Nutrition.Calories) + " ккал" + (entry.Kind == EntryKind.Planned ? " · план" : ""), CaptionSize, "#65546F"), top: 4));
             entries.Children.Add(M(row, top: 4, bottom: 9));
         }
         var bottom = S(); Grid.SetRow(bottom, 2); content.Children.Add(bottom);
         bottom.Children.Add(new FoodPicture { Kind = index, Width = _compactDiary ? 78 : 96, Height = _compactDiary ? 52 : 72, HorizontalAlignment = HorizontalAlignment.Right });
-        var add = Btn("+  Добавить", () => FoodDrawer(meal.TemplateId, day.Date), "#CFFFFFFF", Ink); add.Height = ControlSize; add.Margin = new Thickness(0, 8, 0, 0); bottom.Children.Add(add);
+        var add = MealAction(day.Date, meal, "#CFFFFFFF", Ink); add.Height = ControlSize; add.Margin = new Thickness(0, 8, 0, 0); bottom.Children.Add(add);
         var surface = Surface(content, colors[index % colors.Length], 20, 24); surface.Cursor = System.Windows.Input.Cursors.Hand;
         GiveDepth(surface, 12, .13);
         AllowMealDrop(surface, day.Date, meal.TemplateId);
         surface.MouseLeftButtonUp += (_, e) =>
         {
             if (e.OriginalSource is Button || IsInsideButton(e.OriginalSource as DependencyObject)) return;
-            if (meal.Entries.Count == 0) FoodDrawer(meal.TemplateId, day.Date);
+            if (meal.IsSkipped || meal.Entries.Count == 0) FoodDrawer(meal.TemplateId, day.Date);
             else MealDrawer(day.Date, meal.TemplateId);
         };
         return surface;

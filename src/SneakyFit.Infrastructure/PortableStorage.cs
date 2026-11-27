@@ -54,7 +54,7 @@ public sealed class JsonWorkspaceRepository(IAppPaths paths) : IWorkspaceReposit
             data.Foods.Any(f => f is null || string.IsNullOrWhiteSpace(f.Name) || !Enum.IsDefined(f.Unit) || !FoodUnits.IsValidDensity(f.GramsPerMillilitre) || !FoodUnits.AreValidServings(f.Servings) || !FoodDetails.IsValid(f.Details) ||
                 f.Per100.Calories < 0 || f.Per100.Protein < 0 || f.Per100.Fat < 0 || f.Per100.Carbs < 0) ||
             data.Days.Any(d => d is null || d.Target is null || d.Target.Split is null || !d.Target.Split.IsValid || d.Target.Calories <= 0 || d.Target.ActivityCreditPercent < 0 || d.Target.ActivityCreditPercent > 100 || d.Meals is null || d.Activities is null ||
-                d.Activities.Any(a => a is null || a.Steps < 0 || a.Minutes < 0 || a.EstimatedCalories < 0) ||
+                d.Activities.Any(a => a is null || a.Steps < 0 || a.Minutes < 0 || a.EstimatedCalories < 0 || a.StepCaloriesPer1000 < 0 || a.WorkoutMet is < 1 or > 30) ||
                 d.ActivityGoal is { IsValid: false } ||
                 d.Meals.Any(m => m is null || m.Entries is null || m.Entries.Any(e => e is null || e.Food is null || !Enum.IsDefined(e.Food.Unit) || !FoodUnits.IsValidDensity(e.Food.GramsPerMillilitre) ||
                     e.Grams <= 0 || e.Grams > 10000 || !Enum.IsDefined(e.Kind) || !ValidNutrition(e.Food.Per100) || !FoodDetails.IsValid(e.Food.Details)))))

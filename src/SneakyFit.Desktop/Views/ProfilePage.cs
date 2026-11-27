@@ -10,18 +10,21 @@ namespace SneakyFit.Desktop;
 
 public partial class MainWindow
 {
-    private TextBox? _profileWeightInput;
+    private TextBox? _profileWeightInput, _profileHeightInput;
 
-    private void OpenProfileWeight()
+    private void OpenProfileWeight() => OpenProfileField(focusHeight: false);
+
+    private void OpenProfileField(bool focusHeight)
     {
         if (!CloseDrawer()) return;
         _menuTab = "Настройки";
         Navigate("profile");
-        var input = _profileWeightInput;
+        TextBox? Target() => focusHeight ? _profileHeightInput : _profileWeightInput;
+        var input = Target();
         if (input is null) return;
         Dispatcher.BeginInvoke(() =>
         {
-            if (_page != "profile" || _menuTab != "Настройки" || _profileWeightInput != input) return;
+            if (_page != "profile" || _menuTab != "Настройки" || Target() != input) return;
             input.BringIntoView(); input.Focus(); input.SelectAll();
         }, System.Windows.Threading.DispatcherPriority.Loaded);
     }
@@ -89,8 +92,9 @@ public partial class MainWindow
         var name = Input(profile.Name); var height = Input(profile.HeightCm > 0 ? N(profile.HeightCm) : "");
         var age = Input(profile.BirthDate == DateOnly.MinValue ? "" : years.ToString()); var sex = Select(["Не указан", "Женский", "Мужской"], (int)profile.Sex);
         var lastWeight = _session.Data.Weight.MaxBy(w => w.RecordedAt)?.Kilograms; var weight = Input(lastWeight is { } kg ? N(kg, "0.#") : "");
-        _profileWeightInput = weight;
+        _profileWeightInput = weight; _profileHeightInput = height;
         System.Windows.Automation.AutomationProperties.SetName(weight, "Вес, кг");
+        System.Windows.Automation.AutomationProperties.SetName(height, "Рост, см");
         return S(Field("Имя", name), Pair(Field("Рост, см", height), Field("Возраст", age)), Pair(Field("Вес, кг", weight), Field("Пол", sex)), M(Primary("Сохранить", () => Safe(() =>
         {
             if (string.IsNullOrWhiteSpace(name.Text)) throw new ArgumentException("Введите имя");

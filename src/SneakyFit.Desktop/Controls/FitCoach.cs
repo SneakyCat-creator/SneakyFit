@@ -21,6 +21,10 @@ public sealed class FitCoach : Grid
     private readonly FitCat _cat = new() { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom };
     private readonly Grid _card = new() { Width = CardWidth, MinHeight = 112, Background = Brushes.Transparent, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 98, 22), Visibility = Visibility.Collapsed };
     private readonly Grid _tasks = new();
+    private readonly Button _minimize, _miniature;
+    private readonly TextBlock _pendingCount = T("", 13, "#68469A", true);
+    private readonly ScaleTransform _cardScale = new();
+    private readonly TranslateTransform _cardOffset = new();
     private readonly Viewbox _checklist;
     private readonly StackPanel _body;
     private readonly Border _separator;
@@ -31,7 +35,7 @@ public sealed class FitCoach : Grid
     private readonly DispatcherTimer _tickle = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly List<(AdviceTask Task, bool Done)> _items = [];
     private Phase _phase;
-    private bool _warned, _allClearShown, _visible;
+    private bool _warned, _allClearShown, _visible, _minimized;
     private int _cardVersion, _messageVersion;
     private string _layoutKey = "";
     private string _baseMessage = "";
@@ -64,6 +68,8 @@ public sealed class FitCoach : Grid
             IsHitTestVisible = false
         };
         _card.Children.Add(shadow); _card.Children.Add(new CatDialogFrame()); _card.Children.Add(_body);
+        var motion = new TransformGroup(); motion.Children.Add(_cardScale); motion.Children.Add(_cardOffset);
+        _card.RenderTransform = motion; _card.RenderTransformOrigin = new Point(1, 1);
         var cross = new System.Windows.Shapes.Path
         {
             Data = Geometry.Parse("M 1,1 L 11,11 M 11,1 L 1,11"), Width = 12, Height = 12,
@@ -75,7 +81,28 @@ public sealed class FitCoach : Grid
         close.HorizontalAlignment = HorizontalAlignment.Right; close.VerticalAlignment = VerticalAlignment.Top;
         close.Margin = CatDialogFrame.CloseInsets; AutomationProperties.SetName(close, "Закрыть сообщение фиткота");
         _card.Children.Add(close);
-        Children.Add(_card); Children.Add(_cat); Children.Add(_status);
+        var minus = new Border { Width = 12, Height = 2, CornerRadius = new CornerRadius(1), Background = B("#765A97"),
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        _minimize = QuietButton(minus, Collapse);
+        _minimize.Width = _minimize.Height = 28; _minimize.MinHeight = 0; _minimize.Padding = new Thickness(0);
+        _minimize.HorizontalAlignment = HorizontalAlignment.Right; _minimize.VerticalAlignment = VerticalAlignment.Top;
+        _minimize.Margin = new Thickness(0, close.Margin.Top, close.Margin.Right + 30, 0);
+        _minimize.Visibility = Visibility.Collapsed;
+        AutomationProperties.SetName(_minimize, "Свернуть подсказку");
+        _card.Children.Add(_minimize);
+        var note = new System.Windows.Shapes.Path
+        {
+            Data = Geometry.Parse("M 2,2 H 14 Q 16,2 16,4 V 10 Q 16,12 14,12 H 8 L 4,15 V 12 H 3 Q 1,12 1,10 V 4 Q 1,2 2,2 M 5,6 H 12 M 5,9 H 10"),
+            Stroke = B("#7956AA"), StrokeThickness = 1.4, StrokeLineJoin = PenLineJoin.Round, VerticalAlignment = VerticalAlignment.Center
+        };
+        var badge = new Border { Child = H(note, M(_pendingCount, left: 4)), Background = B("#FFFAF6FF"), BorderBrush = B("#AC91CF"),
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10), Padding = new Thickness(5, 2, 5, 2) };
+        _miniature = QuietButton(badge, RestoreTasks);
+        _miniature.MinHeight = 26; _miniature.Padding = new Thickness(0); _miniature.Visibility = Visibility.Collapsed;
+        _miniature.HorizontalAlignment = HorizontalAlignment.Right; _miniature.VerticalAlignment = VerticalAlignment.Bottom;
+        _miniature.Margin = new Thickness(0, 0, 51, 64);
+        Children.Add(_card); Children.Add(_cat); Children.Add(_status); Children.Add(_miniature);
+        _cat.Tickled += RestoreTasks;
         _cat.Reacted += OnTickle;
         _transient.Tick += (_, _) => FinishTransient();
         _tickle.Tick += (_, _) =>
@@ -110,9 +137,9 @@ public sealed class FitCoach : Grid
     {
         _transient.Stop(); _tickle.Stop(); _items.Clear(); _tasks.Children.Clear();
         _phase = Phase.Idle; _warned = _allClearShown = false; _baseMessage = ""; _layoutKey = "";
-        _status.Content = null; _cardVersion++; _visible = false;
+        _status.Content = null; _cardVersion++; _visible = false; ClearMiniature();
         _card.BeginAnimation(OpacityProperty, null);
-        _card.Visibility = Visibility.Collapsed;
+        _card.Visibility = Visibility.Collapsed; FitToCat();
     }
 
     public void Checking()
@@ -130,8 +157,8 @@ public sealed class FitCoach : Grid
         if (items.Count == 0)
         {
             if (_phase is Phase.Insight or Phase.Completion or Phase.Chatter or Phase.Farewell) return;
-            _items.Clear();
-            _phase = Phase.Idle; HideCard();
+            _items.Clear(); _tasks.Children.Clear(); ClearMiniature();
+            _phase = Phase.Idle; HideCard(FitToCat);
             if (allClear && !_allClearShown)
             {
                 _allClearShown = true; _cat.SetMood(CatMood.Celebration); _cat.PlayCelebration();
@@ -140,15 +167,24 @@ public sealed class FitCoach : Grid
             else if (!allClear) _cat.SetMood(CatMood.Idle);
             return;
         }
-        var previous = _items.Where(i => i.Done).Select(i => i.Task.Id).ToHashSet();
-        var changed = !_items.Select(i => (i.Task.Id, i.Task.Title, i.Done)).SequenceEqual(items.Select(i => (i.Task.Id, i.Task.Title, i.Done)));
         var entering = _phase != Phase.Tasks;
         _phase = Phase.Tasks; _transient.Stop(); _allClearShown = false;
-        _items.Clear(); _items.AddRange(items);
-        if (changed) RebuildTasks(previous);
+        var changed = UpdateChecklist(items);
         if (reveal || entering) { _warned = false; _tickle.Stop(); Say(FitCatPhrases.Welcome()); }
         else if (changed) { _warned = false; _tickle.Stop(); Say(FitCatPhrases.Welcome()); }
-        _cat.SetMood(CatMood.Thinking); _separator.Visibility = Visibility.Visible; ShowCard();
+        _cat.SetMood(CatMood.Thinking); _separator.Visibility = Visibility.Visible;
+        if (_minimized) UpdateMiniature(); else ShowCard();
+    }
+
+    internal bool UpdateChecklist(IReadOnlyList<(AdviceTask Task, bool Done)> items)
+    {
+        if (_items.SequenceEqual(items)) return false;
+        var previouslyDone = _items.Where(i => i.Done).Select(i => i.Task.Id).ToHashSet();
+        _items.Clear();
+        _items.AddRange(items);
+        RebuildTasks(previouslyDone);
+        if (_phase == Phase.Completion && _visible) LayoutCard();
+        return true;
     }
 
     private void RebuildTasks(HashSet<string> previouslyDone)
@@ -174,12 +210,38 @@ public sealed class FitCoach : Grid
         ArrangeChecklist();
     }
 
-    // Opening a task or pressing Escape no longer changes the companion's geometry.
-    public void Collapse() { }
+    public void Collapse()
+    {
+        if (_phase != Phase.Tasks || !_visible || !_items.Any(i => !i.Done)) return;
+        _minimized = true; _tickle.Stop();
+        var moveFocus = _card.IsKeyboardFocusWithin;
+        UpdateMiniature();
+        if (moveFocus) _miniature.Focus();
+        HideCard(() => { if (_minimized) FitToCat(); }, fold: true);
+    }
+
+    private void UpdateMiniature()
+    {
+        var count = _items.Count(i => !i.Done);
+        _pendingCount.Text = count.ToString();
+        AutomationProperties.SetName(_miniature, $"Развернуть список фиткота. Осталось задач: {count}");
+        _miniature.Visibility = Visibility.Visible;
+    }
+
+    private void RestoreTasks()
+    {
+        if (!_minimized || _phase != Phase.Tasks) return;
+        var moveFocus = _miniature.IsKeyboardFocusWithin;
+        ClearMiniature(); ShowCard(unfold: true);
+        if (moveFocus) _minimize.Focus();
+    }
+
+    private void ClearMiniature() { _minimized = false; _miniature.Visibility = Visibility.Collapsed; }
+    private void FitToCat() { Width = _cat.Width; Height = _cat.Height; }
 
     private void OnTickle(string reaction)
     {
-        if (_phase is Phase.Checking or Phase.Farewell) return;
+        if (_minimized || _phase is Phase.Checking or Phase.Farewell) return;
         if (_phase is Phase.Idle or Phase.Chatter) { _transient.Stop(); _phase = Phase.Chatter; _items.Clear(); _tasks.Children.Clear(); _separator.Visibility = Visibility.Collapsed; }
         SetMessage(reaction); ShowCard(); _tickle.Stop(); _tickle.Start();
     }
@@ -189,12 +251,14 @@ public sealed class FitCoach : Grid
         if (_phase == Phase.Completion) return;
         _tickle.Stop(); _transient.Stop(); _phase = Phase.Completion; _warned = false;
         _allClearShown = true; _cat.SetMood(CatMood.Celebration, true); _cat.PlayCelebration();
-        Say(FitCatPhrases.Completion(), praise: true); ShowCard();
+        Say(FitCatPhrases.Completion(), praise: true);
+        if (_minimized) { ClearMiniature(); FitToCat(); } else ShowCard();
         _transient.Interval = TimeSpan.FromSeconds(4.5); _transient.Start();
     }
 
     public void ShowInsight(FitInsight insight)
     {
+        ClearMiniature();
         _transient.Stop(); _tickle.Stop(); _phase = Phase.Insight;
         _items.Clear(); _tasks.Children.Clear(); _separator.Visibility = Visibility.Collapsed;
         _warned = false; _status.Content = null;
@@ -279,6 +343,7 @@ public sealed class FitCoach : Grid
     private void LayoutCard()
     {
         var key = _items.Count > 0 ? string.Join("|", _items.Select(item => item.Task.Id)) : _phase == Phase.Insight ? "insight" : "chat";
+        _minimize.Visibility = _phase == Phase.Tasks && _items.Any(i => !i.Done) ? Visibility.Visible : Visibility.Collapsed;
         if (_visible && _layoutKey == key) return;
         _layoutKey = key;
         var window = Window.GetWindow(this);
@@ -318,23 +383,41 @@ public sealed class FitCoach : Grid
         Width = _card.Width + 98; Height = _card.Height + 22;
     }
 
-    private void ShowCard()
+    private void ShowCard(bool unfold = false)
     {
         LayoutCard(); if (_visible) return;
         var wasHidden = _card.Visibility == Visibility.Collapsed;
-        _visible = true; var version = ++_cardVersion; _card.IsHitTestVisible = true; _card.Visibility = Visibility.Visible;
+        _visible = true; var version = ++_cardVersion; _card.IsEnabled = _card.IsHitTestVisible = true; _card.Visibility = Visibility.Visible;
         var from = wasHidden ? 0 : _card.Opacity;
         _card.BeginAnimation(OpacityProperty, null); _card.Opacity = 1;
+        MoveCard(fold: false, animate: unfold);
         if (!SystemParameters.ClientAreaAnimation) return;
         var fade = new DoubleAnimation(from, 1, TimeSpan.FromMilliseconds(260));
         fade.Completed += (_, _) => { if (version == _cardVersion) _card.BeginAnimation(OpacityProperty, null); };
         _card.BeginAnimation(OpacityProperty, fade);
     }
 
-    private void HideCard(Action? afterHide = null)
+    private void MoveCard(bool fold, bool animate)
+    {
+        void Move(Animatable target, DependencyProperty property, double end)
+        {
+            var start = (double)target.GetValue(property);
+            target.BeginAnimation(property, null); target.SetValue(property, end);
+            if (animate && SystemParameters.ClientAreaAnimation)
+                target.BeginAnimation(property, new DoubleAnimation(start, end, TimeSpan.FromMilliseconds(200))
+                { FillBehavior = FillBehavior.Stop, EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut } });
+        }
+        Move(_cardScale, ScaleTransform.ScaleXProperty, fold ? .13 : 1);
+        Move(_cardScale, ScaleTransform.ScaleYProperty, fold ? .13 : 1);
+        Move(_cardOffset, TranslateTransform.XProperty, fold ? 32 : 0);
+        Move(_cardOffset, TranslateTransform.YProperty, fold ? -44 : 0);
+    }
+
+    private void HideCard(Action? afterHide = null, bool fold = false)
     {
         if (!_visible) { afterHide?.Invoke(); return; }
-        _visible = false; _card.IsHitTestVisible = false; var version = ++_cardVersion;
+        _visible = false; _card.IsEnabled = _card.IsHitTestVisible = false; var version = ++_cardVersion;
+        if (fold) MoveCard(fold: true, animate: true);
         if (!SystemParameters.ClientAreaAnimation) { _card.Visibility = Visibility.Collapsed; afterHide?.Invoke(); return; }
         var fade = new DoubleAnimation(_card.Opacity, 0, TimeSpan.FromMilliseconds(220));
         fade.Completed += (_, _) => { if (version == _cardVersion) { _card.Visibility = Visibility.Collapsed; afterHide?.Invoke(); } };

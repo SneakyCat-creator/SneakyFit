@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using SneakyFit.Desktop.Controls;
 using SneakyFit.Updates;
 using static SneakyFit.Desktop.Views.D;
 
@@ -8,52 +9,128 @@ namespace SneakyFit.Desktop;
 
 public partial class MainWindow
 {
+    private static readonly Version InstalledVersion = typeof(MainWindow).Assembly.GetName().Version ?? new Version(1, 0, 0, 0);
     private readonly CancellationTokenSource _updateLifetime = new();
     private CancellationTokenSource? _updateAttempt;
-    private bool _updating;
+    private GitHubRelease? _offeredUpdate;
+    private Action? _refreshUpdateSettings;
+
+    private static string VersionLabel(Version version) => version.Revision > 0 ? version.ToString() : version.ToString(3);
+
+    internal async Task CheckForUpdateOnStartup()
+    {
+        GitHubRelease? release;
+        try { release = await GitHubUpdates.Find(_updateLifetime.Token); }
+        catch (Exception) { return; } // The manual check reports connection and release errors.
+        if (_updateLifetime.IsCancellationRequested || _updateAttempt is not null || release is null || release.Version <= InstalledVersion ||
+            _session.Data.Profile.DeclinedUpdateVersion == VersionLabel(release.Version)) return;
+        ShowUpdateOffer(release);
+    }
+
+    private void ShowUpdateOffer(GitHubRelease release)
+    {
+        var entering = UpdateBanner.Visibility != Visibility.Visible;
+        _offeredUpdate = release;
+        UpdateTitle.Text = "Доступно обновление " + VersionLabel(release.Version);
+        UpdateNotes.Text = release.Description;
+        UpdateNotesScroll.Visibility = release.Description.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        UpdateBanner.Visibility = Visibility.Visible;
+        UpdatePageScrolling();
+        if (entering) UiMotion.Enter(UpdateBanner, UiMotionKind.Menu);
+    }
+
+    private void HideUpdateOffer()
+    {
+        _offeredUpdate = null;
+        UpdateBanner.Visibility = Visibility.Collapsed;
+        UpdatePageScrolling();
+    }
+
+    private async void AcceptUpdate(object sender, RoutedEventArgs e)
+    {
+        if (_offeredUpdate is { } release) await UpdateNow(release);
+    }
+
+    private void DeclineOrCancelUpdate(object sender, RoutedEventArgs e)
+    {
+        if (_updateAttempt is { } attempt) { attempt.Cancel(); return; }
+        if (_offeredUpdate is not { } release) return;
+        Safe(() =>
+        {
+            _session.SaveProfile(_session.Data.Profile with { DeclinedUpdateVersion = VersionLabel(release.Version) });
+            HideUpdateOffer();
+            SetUpdateStatus("");
+        });
+    }
 
     private UIElement UpdateSettings()
     {
-        var version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
         var status = T("", BodySize, Muted);
-        var update = Primary(_updating ? "Обновление…" : "Обновить", () => { }); update.IsEnabled = !_updating;
-        var cancel = Btn("Отмена", () => _updateAttempt?.Cancel()); cancel.Visibility = _updating ? Visibility.Visible : Visibility.Collapsed;
-        update.Click += async (_, _) => await UpdateNow(update, cancel, status);
+        var update = Primary("Обновить", () => { });
+        var cancel = Btn("Отмена", () => _updateAttempt?.Cancel());
+        update.Click += async (_, _) => await UpdateNow();
         var actions = H(M(cancel, right: 8), update);
         var statusRow = M(status, top: 12);
-        var style = new Style(typeof(Border));
-        var empty = new DataTrigger { Binding = new System.Windows.Data.Binding(nameof(TextBlock.Text)) { Source = status }, Value = "" };
-        empty.Setters.Add(new Setter(VisibilityProperty, Visibility.Collapsed)); style.Triggers.Add(empty); statusRow.Style = style;
-        return S(Between(T("Версия " + version, BodySize, Muted), actions), statusRow,
+        _refreshUpdateSettings = () =>
+        {
+            update.IsEnabled = _updateAttempt is null; update.Content = UpdateAccept.Content;
+            cancel.Visibility = _updateAttempt is null ? Visibility.Collapsed : Visibility.Visible;
+            status.Text = UpdateStatus.Text; status.Foreground = UpdateStatus.Foreground; statusRow.Visibility = UpdateStatus.Visibility;
+        };
+        _refreshUpdateSettings();
+        return S(Between(T("Версия " + VersionLabel(InstalledVersion), BodySize, Muted), actions), statusRow,
             M(Btn("Лицензии", LicensesDrawer, "#00FFFFFF", Muted), top: 6));
     }
 
-    private async Task UpdateNow(Button button, Button cancel, TextBlock status)
+    private void SetUpdateStatus(string message, bool error = false)
     {
-        if (_updating) return;
-        _updating = true; button.IsEnabled = false; cancel.Visibility = Visibility.Visible;
+        UpdateStatus.Text = message;
+        UpdateStatus.Foreground = B(error ? "#AC3448" : "#65546F");
+        UpdateStatus.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        _refreshUpdateSettings?.Invoke();
+    }
+
+    private void RefreshUpdateActions()
+    {
+        var busy = _updateAttempt is not null;
+        UpdateAccept.IsEnabled = !busy;
+        UpdateAccept.Content = busy ? "Обновление…" : "Обновить";
+        UpdateSecondary.Content = busy ? "Отмена" : "Отклонить";
+        _refreshUpdateSettings?.Invoke();
+    }
+
+    private async Task UpdateNow(GitHubRelease? offered = null)
+    {
+        if (_updateAttempt is not null || _updateLifetime.IsCancellationRequested) return;
         using var attempt = CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token); _updateAttempt = attempt;
+        RefreshUpdateActions();
         try
         {
-            status.Foreground = B(Muted); status.Text = "Проверяю обновление…";
-            var found = await GitHubUpdates.Find(attempt.Token);
-            var current = typeof(MainWindow).Assembly.GetName().Version ?? new Version(1, 0, 0, 0);
-            if (found is null || found.Version <= current) { status.Text = "Установлена последняя версия ✓"; return; }
-            status.Text = "Загрузка…";
+            if (offered is null) SetUpdateStatus("Проверяю обновление…");
+            var found = offered ?? await GitHubUpdates.Find(attempt.Token);
+            attempt.Token.ThrowIfCancellationRequested();
+            if (found is null || found.Version <= InstalledVersion) { HideUpdateOffer(); SetUpdateStatus("Установлена последняя версия ✓"); return; }
+            ShowUpdateOffer(found);
+            SetUpdateStatus("Загрузка…");
             await Task.Run(UpdateHandoff.CleanOldDownloads, attempt.Token);
-            var downloaded = await GitHubUpdates.Download(found, new Progress<int>(percent => status.Text = "Загрузка · " + percent + "%"), attempt.Token);
-            if (!CloseDrawer()) { status.Text = "Сохраните изменения перед обновлением."; UpdateHandoff.RemoveDirectory(downloaded.Directory); return; }
-            status.Text = "Подготовка к перезапуску…";
+            var downloading = true;
+            var progress = new Progress<int>(percent =>
+            {
+                if (downloading && _updateAttempt == attempt && !attempt.IsCancellationRequested) SetUpdateStatus($"Загрузка · {percent}%");
+            });
+            var downloaded = await GitHubUpdates.Download(found, progress, attempt.Token);
+            downloading = false;
+            if (!CloseDrawer()) { SetUpdateStatus("Сохраните изменения перед обновлением."); UpdateHandoff.RemoveDirectory(downloaded.Directory); return; }
+            SetUpdateStatus("Подготовка к перезапуску…");
             await UpdateHandoff.Prepare(downloaded, attempt.Token);
-            cancel.IsEnabled = false;
             System.Windows.Application.Current.Shutdown();
         }
-        catch (OperationCanceledException) { status.Text = "Обновление отменено"; }
-        catch (Exception error) { status.Text = error is IOException ? error.Message : "Не удалось обновить приложение. Повторите позже."; status.Foreground = B(Coral); }
+        catch (OperationCanceledException) { SetUpdateStatus("Обновление отменено"); }
+        catch (Exception error) { SetUpdateStatus(error is IOException or InvalidDataException ? error.Message : "Не удалось обновить приложение. Повторите позже.", error: true); }
         finally
         {
-            _updateAttempt = null; _updating = false; button.IsEnabled = true; button.Content = "Обновить";
-            cancel.Visibility = Visibility.Collapsed; cancel.IsEnabled = true;
+            _updateAttempt = null;
+            RefreshUpdateActions();
         }
     }
 }

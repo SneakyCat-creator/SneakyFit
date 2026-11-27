@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using SneakyFit.Application;
 using SneakyFit.Domain;
 using SneakyFit.Desktop.Controls;
 using static SneakyFit.Desktop.Views.D;
@@ -11,6 +12,14 @@ public partial class MainWindow
     private void MealDrawer(DateOnly date, Guid templateId)
     {
         var day = _session.Day(date); var meal = day.Meals.First(m => m.TemplateId == templateId);
+        if (meal.IsSkipped)
+        {
+            Drawer(meal.Name, T("Приём пропущен", HeadingSize, "#65546F"), Primary("Возобновить приём", () => Safe(() =>
+            {
+                _session.SetMealSkipped(date, templateId, false); CloseDrawer();
+            })));
+            return;
+        }
         var body = S(Between(T(N(meal.Total(date > DateOnly.FromDateTime(DateTime.Now) ? EntryKind.Planned : EntryKind.Eaten).Calories) + " ккал", MetricSize, Purple, true), Btn(meal.Time.ToString("HH:mm"), () => EditMealTime(date, templateId))));
         foreach (var entry in meal.Entries)
         {
@@ -43,53 +52,94 @@ public partial class MainWindow
     }
 
     private void BalanceDrawer() => ActivityDrawer();
+    private static string ActivityValue(decimal kcal, string prefix) => kcal is > 0 and < 1 ? "<1" : prefix + N(kcal);
+    private static string ActivityEnergy(decimal kcal, string prefix) => ActivityValue(kcal, prefix) + " ккал";
+
     private void ActivityDrawer()
     {
         if (_flushDrawer?.Invoke() == false) return;
         var date = _session.SelectedDate; var day = _session.Day(date);
-        var weight = SneakyFit.Application.SmartTargets.WeightAt(_session.Data, date);
+        var future = date > DateOnly.FromDateTime(DateTime.Now);
+        var weight = SmartTargets.ActivityWeightAt(_session.Data, date);
         var ledger = BalanceLedger.Before(_session.Data.Days, date);
-        var steps = Input(day.Activities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => a.Steps).ToString(), metric: true);
+        var walks = day.Activities.Where(a => a.Kind == ActivityKind.Steps).ToList();
+        var savedSteps = walks.Sum(a => a.Steps);
+        decimal? savedExpense = walks.Any(a => a.EstimatedCalories is null) ? null : walks.Sum(a => a.EstimatedCalories ?? 0);
+        var steps = Input(savedSteps.ToString(), metric: true);
         var stepsEstimate = T("", PageHeadingSize, Mint, true);
+        var stepSetup = Link("", "Настроить расчёт шагов", StepRuleDrawer, size: SubheadingSize);
         var duration = Input("30"); var exercise = Select(["Силовая тренировка", "Эллипс", "Домашняя тренировка", "Аэробика", "Плавание", "Велосипед"]);
         decimal[] mets = [3.5m, 5m, 3.8m, 7.3m, 5.8m, 4m];
         var workoutEstimate = T("", PageHeadingSize, Coral, true);
+        var stepsEdited = false;
+        bool TryStepCount(out int count)
+        {
+            var digits = steps.Text.Replace(" ", "").Replace("\u00A0", "").Replace("\u202F", "");
+            return int.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out count) && count <= 200000;
+        }
         void Estimate()
         {
-            stepsEstimate.Text = int.TryParse(steps.Text.Replace(" ", "").Replace("\u00A0", ""), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var count) && count <= 200000
-                ? "≈ " + N(SneakyFit.Application.SmartTargets.StepCalories(_session.Data, date, count)) + " ккал" : "—";
-            try { workoutEstimate.Text = weight is { } kg ? "≈ " + N(Math.Max(0, mets[exercise.SelectedIndex] - 1) * kg * Num(duration, "Минуты", 1, 600) / 60) + " ккал" : ""; } catch { workoutEstimate.Text = "—"; }
+            var valid = TryStepCount(out var count);
+            var kcal = stepsEdited ? SmartTargets.StepCalories(_session.Data, date, count) : savedExpense;
+            var needsRate = valid && kcal is null;
+            stepsEstimate.Text = valid && kcal is { } stepEnergy ? ActivityEnergy(stepEnergy, "≈ ") : "—";
+            stepsEstimate.Visibility = needsRate ? Visibility.Collapsed : Visibility.Visible;
+            stepSetup.Visibility = needsRate ? Visibility.Visible : Visibility.Collapsed;
+            try { workoutEstimate.Text = SmartTargets.WorkoutCalories(weight, mets[exercise.SelectedIndex], (int)Num(duration, "Минуты", 1, 600)) is { } workoutEnergy ? ActivityEnergy(workoutEnergy, "≈ ") : ""; } catch { workoutEstimate.Text = "—"; }
         }
-        steps.TextChanged += (_, _) => Estimate(); duration.TextChanged += (_, _) => Estimate(); exercise.SelectionChanged += (_, _) => Estimate(); Estimate();
-        void CanRecord() { if (date > DateOnly.FromDateTime(DateTime.Now)) throw new ArgumentException("Выберите сегодняшний или прошедший день."); }
+        steps.TextChanged += (_, _) => { stepsEdited = true; Estimate(); };
+        duration.TextChanged += (_, _) => Estimate(); exercise.SelectionChanged += (_, _) => Estimate(); Estimate();
         var stepSettings = Round("⚙", StepRuleDrawer, "#FFFFFF");
         stepSettings.Width = stepSettings.Height = stepSettings.MinHeight = 32; stepSettings.FontSize = 20;
-        var stepCard = Surface(S(Between(T("Шаги", HeadingSize, Ink, true), stepSettings), M(steps, top: 10, bottom: 8), stepsEstimate), "#E8F3EA", 14);
-        UIElement workoutSummary = weight is null ? Link("", "Добавьте вес в профиле", OpenProfileWeight, size: SubheadingSize) : workoutEstimate;
-        var training = S(T("Тренировка", HeadingSize, Ink, true), M(Pair(Field("Занятие", exercise), Field("Минуты", duration), 3, 1, 12), top: 12), M(workoutSummary, bottom: 8), Primary("Добавить тренировку", () => Safe(() =>
+        var stepCard = Surface(S(Between(T("Шаги", HeadingSize, Ink, true), stepSettings), M(steps, top: 10, bottom: 8), stepsEstimate, stepSetup), "#E8F3EA", 14);
+        var workoutSummary = weight is null ? Link("", "Добавьте вес в профиле", OpenProfileWeight, " для расчёта расхода", SubheadingSize) : workoutEstimate;
+        Guid? editing = null;
+        var save = Primary(future ? "Запланировать тренировку" : "Добавить тренировку", () => Safe(() =>
         {
             if (_flushDrawer?.Invoke() == false) return;
-            CanRecord(); if (weight is null) { OpenProfileWeight(); return; }
-            var minutes = (int)Num(duration, "Минуты", 1, 600); var fresh = _session.Day(date);
-            var entry = new ActivityEntry(Guid.NewGuid(), ActivityKind.Workout, exercise.SelectedItem.ToString()!, 0, minutes, Math.Round((mets[exercise.SelectedIndex] - 1) * weight.Value * minutes / 60), TimeOnly.FromDateTime(DateTime.Now));
-            _session.UpdateDay(fresh with { Activities = [.. fresh.Activities, entry] }); ActivityDrawer();
-        })));
+            var minutes = Num(duration, "Минуты", 1, 600);
+            if (minutes != decimal.Truncate(minutes)) throw new ArgumentException("Укажите целое число минут.");
+            _session.SaveWorkout(date, exercise.SelectedItem.ToString()!, mets[exercise.SelectedIndex], (int)minutes, editing);
+            ActivityDrawer();
+        }));
+        var cancelEdit = Btn("Отмена", ActivityDrawer); cancelEdit.Visibility = Visibility.Collapsed;
+        var training = S(T("Тренировка", HeadingSize, Ink, true), M(Pair(Field("Занятие", exercise), Field("Минуты", duration), 3, 1, 12), top: 12), M(workoutSummary, bottom: 8), save, cancelEdit);
         var workouts = S();
-        foreach (var activity in day.Activities.Where(a => a.Kind == ActivityKind.Workout)) workouts.Children.Add(M(Between(S(T(activity.Name, BodySize, Ink, true), M(T(activity.Minutes + " мин · " + N(activity.EstimatedCalories) + " ккал", CaptionSize, Muted), top: 3)), Round("×", () => Safe(() =>
+        foreach (var activity in day.Activities.Where(a => a.Kind == ActivityKind.Workout))
         {
-            if (_flushDrawer?.Invoke() == false) return;
-            var fresh = _session.Day(date); _session.UpdateDay(fresh with { Activities = fresh.Activities.Where(a => a.Id != activity.Id).ToList() }); ActivityDrawer();
-        }), "#FFFFFF")), bottom: 8));
+            var edit = Link("", activity.Name, () =>
+            {
+                editing = activity.Id; exercise.SelectedIndex = Math.Max(0, exercise.Items.IndexOf(activity.Name));
+                duration.Text = activity.Minutes.ToString(); save.Content = "Сохранить тренировку";
+                cancelEdit.Visibility = Visibility.Visible; duration.Focus(); duration.SelectAll();
+            });
+            var estimate = activity.EstimatedCalories is { } kcal ? N(kcal) + " ккал" : "расход после взвешивания";
+            var details = activity.Minutes + " мин · " + estimate + (activity.Planned ? " · план" : "");
+            var remove = Round("×", () => Safe(() =>
+            {
+                if (_flushDrawer?.Invoke() == false) return;
+                var fresh = _session.Day(date);
+                _session.UpdateDay(fresh with { Activities = fresh.Activities.Where(a => a.Id != activity.Id).ToList() });
+                ActivityDrawer();
+            }), "#FFFFFF");
+            workouts.Children.Add(M(Between(S(edit, M(T(details, CaptionSize, Muted), top: 3)), remove), bottom: 8));
+        }
         var workoutHistory = new ScrollViewer { Content = workouts, MaxHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         if (workouts.Children.Count > 0) training.Children.Add(M(workoutHistory, top: 8));
+        if (!future && day.Activities.Any(a => a.Planned))
+            training.Children.Add(M(Btn("Отметить план активности выполненным", () => Safe(() =>
+            {
+                if (_flushDrawer?.Invoke() == false) return;
+                _session.ConfirmActivityPlan(date); ActivityDrawer();
+            })), top: 8));
 
         var balance = S(
             T("Баланс недели", HeadingSize, Ink, true),
             M(T(Sign(ledger.FoodReserve) + " ккал", MetricSize, Purple, true), top: 8),
             M(T("Баланс еды за 7 дней", CaptionSize, Muted), top: 2, bottom: 16),
             Surface(S(
-                Between(T("Шаги", BodySize, Ink), T("+" + N(ledger.StepsCredit), SubheadingSize, Mint, true)),
-                M(Between(T("Тренировки", BodySize, Ink), T("+" + N(ledger.WorkoutsCredit), SubheadingSize, Mint, true)), top: 8)
+                Between(T("Шаги", BodySize, Ink), T(ActivityValue(ledger.StepsCredit, "+"), SubheadingSize, Mint, true)),
+                M(Between(T("Тренировки", BodySize, Ink), T(ActivityValue(ledger.WorkoutsCredit, "+"), SubheadingSize, Mint, true)), top: 8)
             ), "#E8F3EA", 14, 14)
         );
 
@@ -122,9 +172,7 @@ public partial class MainWindow
             debounce.Stop(); if (!dirty) return true;
             try
             {
-                CanRecord();
-                var digits = steps.Text.Replace(" ", "").Replace("\u00A0", "");
-                if (!int.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var count) || count > 200000) throw new ArgumentException("Шаги: целое число от 0 до 200 000.");
+                if (!TryStepCount(out var count)) throw new ArgumentException("Шаги: целое число от 0 до 200 000.");
                 _session.SaveSteps(date, count); dirty = false; DrawerError.Text = ""; return true;
             }
             catch (Exception error) { DrawerError.Text = error.Message; return false; }
@@ -139,12 +187,19 @@ public partial class MainWindow
     private void StepRuleDrawer()
     {
         var profile = _session.Data.Profile; var automatic = new CheckBox { Content = "Рассчитывать по весу и росту", IsChecked = profile.StepsCaloriesPer1000 is null, Margin = new Thickness(0, 0, 0, 20) };
-        var rate = Input(N(SneakyFit.Application.SmartTargets.StepRate(_session.Data, _session.SelectedDate), "0.#")); rate.IsEnabled = automatic.IsChecked != true;
+        var rate = Input(SmartTargets.StepRate(_session.Data, _session.SelectedDate) is { } currentRate ? N(currentRate, "0.#") : ""); rate.IsEnabled = automatic.IsChecked != true;
         automatic.Checked += (_, _) => rate.IsEnabled = false; automatic.Unchecked += (_, _) => rate.IsEnabled = true;
-        Drawer("Расчёт шагов", S(automatic, Field("Ккал на 1000 дополнительных шагов", rate)), Primary("Сохранить", () => Safe(() =>
+        var fields = S(automatic, Field("Ккал на 1 000 шагов", rate));
+        var weightMissing = SmartTargets.ActivityWeightAt(_session.Data, _session.SelectedDate) is null;
+        if (profile.HeightCm <= 0 || weightMissing)
+        {
+            var missing = profile.HeightCm > 0 ? "вес" : weightMissing ? "рост и вес" : "рост";
+            fields.Children.Add(M(Link("Для авторасчёта ", "укажите " + missing + " в профиле", () => OpenProfileField(focusHeight: !weightMissing)), top: 10));
+        }
+        Drawer("Расчёт шагов", fields, Primary("Сохранить", () => Safe(() =>
         {
             _session.SaveProfile(_session.Data.Profile with { StepsCaloriesPer1000 = automatic.IsChecked == true ? null : Num(rate, "Расход", 0, 300) });
-            var day = _session.Day(_session.SelectedDate); if (day.Activities.Any(a => a.Kind == ActivityKind.Steps)) _session.SaveSteps(day.Date, day.Activities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => a.Steps));
+            var day = _session.Day(_session.SelectedDate); if (day.Activities.Any(a => a.Kind == ActivityKind.Steps && (!a.Planned || day.Date > DateOnly.FromDateTime(DateTime.Now)))) _session.SaveSteps(day.Date, day.Activities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => a.Steps));
             BackDrawer(); ActivityDrawer();
         })));
     }

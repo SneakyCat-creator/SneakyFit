@@ -75,16 +75,16 @@ public static class FitAdvisor
         var today = DateOnly.FromDateTime(now);
         var taskDate = task.Date ?? today;
         if (taskDate > today) return false;
-        var activities = data.Days.FirstOrDefault(d => d.Date == taskDate)?.Activities ?? [];
+        var activities = data.Days.FirstOrDefault(d => d.Date == taskDate)?.RecordedActivities ?? [];
         return task.Rule switch
         {
             "profile" => data.Profile.HeightCm is >= 50 and <= 260 && data.Profile.BirthDate < today && data.Profile.BirthDate >= today.AddYears(-120) && data.Profile.Sex is BiologicalSex.Male or BiologicalSex.Female,
             "weight" => data.Weight.Any(w => w.RecordedAt <= now && now - w.RecordedAt < TimeSpan.FromDays(7)),
             "measurements" => data.Measurements.Any(m => m.RecordedAt <= now && now - m.RecordedAt < TimeSpan.FromDays(30) && (task.MeasurementKey is null || m.Key == task.MeasurementKey && m.Side == task.Side)),
-            "food" => data.Days.FirstOrDefault(d => d.Date == taskDate)?.Meals.Any(m => m.TemplateId == task.MealId && m.Entries.Any(e => e.Kind == EntryKind.Eaten)) == true,
+            "food" => data.Days.FirstOrDefault(d => d.Date == taskDate)?.Meals.Any(m => m.TemplateId == task.MealId && (m.IsSkipped || m.Entries.Any(e => e.Kind == EntryKind.Eaten))) == true,
             "movement" => activities.Any(a => a.Kind == ActivityKind.Steps && a.Steps > 0 || a.Kind == ActivityKind.Workout && a.Minutes > 0),
             "steps" => activities.Any(a => a.Kind == ActivityKind.Steps),
-            "training" => data.Days.Any(d => d.Date <= taskDate && taskDate.DayNumber - d.Date.DayNumber < 7 && d.Activities.Any(a => a.Kind == ActivityKind.Workout && a.Minutes > 0)),
+            "training" => data.Days.Any(d => d.Date <= taskDate && taskDate.DayNumber - d.Date.DayNumber < 7 && d.RecordedActivities.Any(a => a.Kind == ActivityKind.Workout && a.Minutes > 0)),
             _ => false
         };
     }

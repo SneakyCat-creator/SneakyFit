@@ -80,7 +80,7 @@ public partial class MainWindow
     {
         // IsEnabled alone does not exclude raw pointer handlers or the companion,
         // which is drawn above the shade. Keep only the dialog and native chrome interactive.
-        foreach (var element in new UIElement[] { PageScroll, SettingsButton, Companion })
+        foreach (var element in new UIElement[] { PageScroll, UpdateBanner, SettingsButton, Companion })
         {
             element.IsHitTestVisible = !open;
             element.IsEnabled = !open;

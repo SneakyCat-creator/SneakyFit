@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace SneakyFit.Domain;
 
 public enum NutritionMode { Maintain, Lose, Gain }
@@ -71,11 +73,22 @@ public sealed record FoodEntry(Guid Id, FoodSnapshot Food, decimal Grams, EntryK
 public sealed record MealTemplate(Guid Id, string Name, TimeOnly Time);
 public sealed record Meal(Guid Id, Guid TemplateId, string Name, TimeOnly Time, List<FoodEntry> Entries)
 {
-    public Nutrition Total(EntryKind kind) => Entries.Where(x => x.Kind == kind).Aggregate(Nutrition.Zero, (sum, x) => sum + x.Nutrition);
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsSkipped { get; init; }
+    [JsonIgnore]
+    public IEnumerable<FoodEntry> ActiveEntries => IsSkipped ? [] : Entries;
+    public Nutrition Total(EntryKind kind) => ActiveEntries.Where(x => x.Kind == kind).Aggregate(Nutrition.Zero, (sum, x) => sum + x.Nutrition);
 }
 
 // Manual calorie estimates are intentionally separate from step counts and durations.
-public sealed record ActivityEntry(Guid Id, ActivityKind Kind, string Name, int Steps, int Minutes, decimal EstimatedCalories, TimeOnly Time);
+public sealed record ActivityEntry(Guid Id, ActivityKind Kind, string Name, int Steps, int Minutes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] decimal? EstimatedCalories, TimeOnly Time)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? StepCaloriesPer1000 { get; init; }
+    public decimal? WorkoutMet { get; init; }
+    public bool Planned { get; init; }
+}
 // A personal movement goal, independent of food allowances and calorie-credit settings.
 public sealed record ActivityGoalSnapshot(decimal TargetPoints, decimal ReferencePoints, decimal StepPointsPer1000, int ObservedDays)
 {
@@ -85,10 +98,12 @@ public sealed record ActivityGoalSnapshot(decimal TargetPoints, decimal Referenc
 public sealed record DiaryDay(DateOnly Date, TargetSnapshot Target, DayStatus Status, List<Meal> Meals, List<ActivityEntry> Activities)
 {
     public ActivityGoalSnapshot? ActivityGoal { get; init; }
-    public bool HasFoodRecord => Meals.Any(m => m.Entries.Any(e => e.Kind == EntryKind.Eaten));
-    public bool HasActualRecord => HasFoodRecord || Activities.Count > 0;
+    [JsonIgnore]
+    public IEnumerable<ActivityEntry> RecordedActivities => Activities.Where(a => !a.Planned);
+    public bool HasFoodRecord => Meals.Any(m => m.ActiveEntries.Any(e => e.Kind == EntryKind.Eaten));
+    public bool HasActualRecord => HasFoodRecord || Meals.Any(m => m.IsSkipped) || RecordedActivities.Any();
     public Nutrition Total(EntryKind kind) => Meals.Aggregate(Nutrition.Zero, (sum, meal) => sum + meal.Total(kind));
-    public decimal ActivityCalories(ActivityKind kind) => Activities.Where(x => x.Kind == kind).Sum(x => x.EstimatedCalories) * Target.ActivityCreditPercent / 100;
+    public decimal ActivityCalories(ActivityKind kind) => RecordedActivities.Where(x => x.Kind == kind).Sum(x => x.EstimatedCalories ?? 0) * Target.ActivityCreditPercent / 100;
     public decimal Remaining => Target.Calories - Total(EntryKind.Eaten).Calories;
     public decimal MovementCalories => ActivityCalories(ActivityKind.Steps) + ActivityCalories(ActivityKind.Workout);
     public decimal Budget => Target.Calories + (Status == DayStatus.Planned ? Target.ExpectedActivityCalories : MovementCalories);
@@ -111,6 +126,8 @@ public sealed record Profile(Guid Id, string Name, decimal HeightCm, DateOnly Bi
     public decimal? GoalWeightKg { get; init; }
     public bool ShowWeightGoal { get; init; } = true;
     public decimal? StepsCaloriesPer1000 { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeclinedUpdateVersion { get; init; }
     public AdvisorPreferences Advisor { get; init; } = new();
 }
 

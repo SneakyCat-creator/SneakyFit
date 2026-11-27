@@ -5,7 +5,10 @@ using System.Text.Json;
 
 namespace SneakyFit.Updates;
 
-public sealed record GitHubRelease(Version Version, Uri DownloadUrl, long Size, string? Digest);
+public sealed record GitHubRelease(Version Version, Uri DownloadUrl, long Size, string? Digest)
+{
+    public string Description { get; init; } = "";
+}
 public sealed record DownloadedUpdate(string Directory, string Executable, ExecutableRelease Release);
 
 public static class GitHubUpdates
@@ -66,7 +69,8 @@ public static class GitHubUpdates
                         var raw = value.GetString();
                         if (raw?.StartsWith("sha256:", StringComparison.Ordinal) == true && ReleaseTrust.IsHash(raw[7..])) digest = raw[7..];
                     }
-                    var found = new GitHubRelease(version, uri, size, digest); Cache(found); return found;
+                    var found = new GitHubRelease(version, uri, size, digest) { Description = ReleaseDescription(root) };
+                    Cache(found); return found;
                 }
                 catch (Exception error) when (Retryable(error, cancellation) && attempt < 1)
                 {
@@ -82,6 +86,19 @@ public static class GitHubUpdates
     }
 
     private static void Cache(GitHubRelease? release) { _cached = release; _validUntil = DateTimeOffset.UtcNow.AddMinutes(5); }
+
+    private static string ReleaseDescription(JsonElement release)
+    {
+        if (!release.TryGetProperty("body", out var body) || body.ValueKind != JsonValueKind.String) return "";
+        var description = body.GetString()!.ReplaceLineEndings("\n").Trim();
+        var lines = description.Split('\n');
+        if (lines.Length < 2 || !ReleaseTrust.IsHash(lines[^1].Trim().Trim('`'))) return description;
+        var heading = lines.Length - 2;
+        while (heading > 0 && string.IsNullOrWhiteSpace(lines[heading])) heading--;
+        return lines[heading].Trim(' ', '#', '*', '`', ':').Equals("SHA256", StringComparison.OrdinalIgnoreCase)
+            ? string.Join("\n", lines, 0, heading).TrimEnd() : description;
+    }
+
     public static bool TryVersion(string? tag, out Version version)
     {
         version = new(0, 0, 0, 0);

@@ -11,7 +11,7 @@ public sealed class WorkspaceSession
     public WorkspaceSession(IWorkspaceRepository repository, Workspace workspace)
     {
         this.repository = repository;
-        Data = ActivityIndex.FreezeGoals(workspace);
+        Data = ActivityIndex.FreezeGoals(FillActivityEstimates(workspace));
         if (!ReferenceEquals(Data, workspace)) repository.Save(Data);
     }
     public event Action? Changed;
@@ -42,12 +42,37 @@ public sealed class WorkspaceSession
 
     public void SaveSteps(DateOnly date, int count)
     {
-        if (date > DateOnly.FromDateTime(DateTime.Now) || count < 0 || count > 200000) throw new ArgumentException("Проверьте дату и количество шагов.");
+        if (count is < 0 or > 200000) throw new ArgumentException("Укажите от 0 до 200 000 шагов.");
         var day = Day(date); var previous = day.Activities.FirstOrDefault(a => a.Kind == ActivityKind.Steps);
-        var calories = SmartTargets.StepCalories(Data, date, count);
-        if (previous is not null && previous.Steps == count && previous.EstimatedCalories == calories) return;
-        var entry = new ActivityEntry(previous?.Id ?? Guid.NewGuid(), ActivityKind.Steps, "Шаги", count, 0, calories, TimeOnly.FromDateTime(DateTime.Now));
+        var rate = SmartTargets.StepRate(Data, date);
+        var calories = SmartTargets.StepCalories(count, rate);
+        var planned = date > DateOnly.FromDateTime(DateTime.Now);
+        if (previous is not null && previous.Steps == count && previous.EstimatedCalories == calories && previous.StepCaloriesPer1000 == rate && previous.Planned == planned) return;
+        var entry = new ActivityEntry(previous?.Id ?? Guid.NewGuid(), ActivityKind.Steps, "Шаги", count, 0, calories, TimeOnly.FromDateTime(DateTime.Now))
+            { StepCaloriesPer1000 = rate, Planned = planned };
         UpdateDay(day with { Activities = [.. day.Activities.Where(a => a.Kind != ActivityKind.Steps), entry] });
+    }
+
+    public void SaveWorkout(DateOnly date, string name, decimal met, int minutes, Guid? id = null)
+    {
+        if (string.IsNullOrWhiteSpace(name) || met is < 1 or > 30 || minutes is < 1 or > 600)
+            throw new ArgumentException("Проверьте занятие и продолжительность тренировки.");
+        var day = Day(date);
+        var previous = id is null ? null : day.Activities.FirstOrDefault(a => a.Id == id && a.Kind == ActivityKind.Workout)
+            ?? throw new ArgumentException("Тренировка больше не найдена.");
+        var calories = SmartTargets.WorkoutCalories(SmartTargets.ActivityWeightAt(Data, date), met, minutes);
+        var entry = new ActivityEntry(previous?.Id ?? Guid.NewGuid(), ActivityKind.Workout, name, 0, minutes, calories, previous?.Time ?? TimeOnly.FromDateTime(DateTime.Now))
+            { WorkoutMet = met, Planned = date > DateOnly.FromDateTime(DateTime.Now) };
+        UpdateDay(day with { Activities = previous is null ? [.. day.Activities, entry] :
+            day.Activities.Select(a => a.Id == entry.Id ? entry : a).ToList() });
+    }
+
+    public void ConfirmActivityPlan(DateOnly date)
+    {
+        if (date > DateOnly.FromDateTime(DateTime.Now)) throw new ArgumentException("Отметить выполнение можно в день занятия.");
+        var day = Day(date);
+        if (day.Activities.Any(a => a.Planned))
+            UpdateDay(day with { Activities = day.Activities.Select(a => a.Planned ? a with { Planned = false } : a).ToList() });
     }
 
     public void AddFoodToMeal(DateOnly date, Guid templateId, Food food, decimal grams, EntryKind kind)
@@ -59,8 +84,17 @@ public sealed class WorkspaceSession
         var entry = new FoodEntry(Guid.NewGuid(), new(food.Id, food.Name, food.Per100) { Unit = food.Unit, GramsPerMillilitre = food.GramsPerMillilitre, Details = food.Details }, grams, kind) { AddedAt = DateTimeOffset.UtcNow };
         if (!day.Meals.Any(m => m.TemplateId == templateId)) throw new ArgumentException("Приём пищи больше не найден.");
         var foods = Data.Foods.Any(f => f.Id == food.Id) ? Data.Foods : [.. Data.Foods, food];
-        var updated = day with { Meals = day.Meals.Select(m => m.TemplateId == templateId ? m with { Entries = [.. m.Entries, entry] } : m).ToList() };
+        var updated = day with { Meals = day.Meals.Select(m => m.TemplateId == templateId ? m with { IsSkipped = false, Entries = [.. m.Entries, entry] } : m).ToList() };
         Commit(Data with { Foods = foods, Days = Data.Days.Where(d => d.Date != date).Append(updated).OrderBy(d => d.Date).ToList() });
+    }
+
+    public void SetMealSkipped(DateOnly date, Guid templateId, bool skipped)
+    {
+        var day = Day(date);
+        var meal = day.Meals.FirstOrDefault(m => m.TemplateId == templateId)
+            ?? throw new ArgumentException("Приём пищи больше не найден.");
+        if (meal.IsSkipped == skipped) return;
+        UpdateDay(day with { Meals = day.Meals.Select(m => m.TemplateId == templateId ? m with { IsSkipped = skipped } : m).ToList() });
     }
 
     public void RemoveEntry(DateOnly date, Guid entryId)
@@ -90,7 +124,7 @@ public sealed class WorkspaceSession
         if (date > DateOnly.FromDateTime(DateTime.Now)) throw new ArgumentException("Этот приём пищи запланирован на будущий день.");
         var day = Day(date);
         UpdateDay(day with { Meals = day.Meals.Select(m => m.TemplateId == templateId
-            ? m with { Entries = m.Entries.Select(e => e.Kind == EntryKind.Planned ? e with { Kind = EntryKind.Eaten } : e).ToList() } : m).ToList() });
+            ? m with { IsSkipped = false, Entries = m.Entries.Select(e => e.Kind == EntryKind.Planned ? e with { Kind = EntryKind.Eaten } : e).ToList() } : m).ToList() });
     }
 
     public void CopyMenu(DateOnly from, DateOnly to, bool replacePlan = false)
@@ -98,11 +132,13 @@ public sealed class WorkspaceSession
         if (from == to) throw new ArgumentException("Выберите другой день для копирования.");
         var source = Day(from);
         var destination = Day(to);
-        if (!source.Meals.Any(m => m.Entries.Count > 0)) throw new ArgumentException("В этом дне нет блюд.");
-        var meals = destination.Meals.Select(m => replacePlan ? m with { Entries = m.Entries.Where(e => e.Kind == EntryKind.Eaten).ToList() } : m).ToList();
-        foreach (var meal in source.Meals.Where(m => m.Entries.Count > 0))
+        var sourceMeals = source.Meals.Where(m => m.ActiveEntries.Any()).ToArray();
+        if (sourceMeals.Length == 0) throw new ArgumentException("В этом дне нет блюд для переноса.");
+        var meals = destination.Meals.Select(m => replacePlan && !m.IsSkipped ? m with { Entries = m.Entries.Where(e => e.Kind == EntryKind.Eaten).ToList() } : m).ToList();
+        foreach (var meal in sourceMeals)
         {
             var index = meals.FindIndex(m => m.TemplateId == meal.TemplateId || m.Name == meal.Name);
+            if (index >= 0 && meals[index].IsSkipped) continue;
             var entries = meal.Entries.Select(e => e with { Id = Guid.NewGuid(), Kind = EntryKind.Planned, AddedAt = DateTimeOffset.UtcNow }).ToList();
             if (index >= 0) meals[index] = meals[index] with { Entries = [.. meals[index].Entries, .. entries] };
             else meals.Add(meal with { Id = Guid.NewGuid(), Entries = entries });
@@ -110,7 +146,7 @@ public sealed class WorkspaceSession
         UpdateDay(destination with { Meals = meals });
     }
 
-    public List<Guid> RecentFoodIds() => Data.Days.SelectMany(day => day.Meals.SelectMany(meal => meal.Entries
+    public List<Guid> RecentFoodIds() => Data.Days.SelectMany(day => day.Meals.SelectMany(meal => meal.ActiveEntries
         .Select(entry => (Entry: entry, RecordedAt: entry.AddedAt ?? new DateTimeOffset(day.Date.ToDateTime(meal.Time), TimeSpan.Zero)))))
         .OrderByDescending(item => item.RecordedAt).Select(item => item.Entry.Food.SourceFoodId).Distinct().ToList();
 
@@ -144,7 +180,7 @@ public sealed class WorkspaceSession
         var changedSource = source with { Meals = source.Meals.Select(m => m with { Entries = m.Entries.Where(e => e.Id != entryId).ToList() }).ToList() };
         var target = from == to ? changedSource : Day(to);
         if (!target.Meals.Any(m => m.TemplateId == templateId)) throw new ArgumentException("Приём пищи больше не найден.");
-        target = target with { Meals = target.Meals.Select(m => m.TemplateId == templateId ? m with { Entries = [.. m.Entries, entry] } : m).ToList() };
+        target = target with { Meals = target.Meals.Select(m => m.TemplateId == templateId ? m with { IsSkipped = false, Entries = [.. m.Entries, entry] } : m).ToList() };
         var days = Data.Days.Where(d => d.Date != from && d.Date != to).ToList();
         if (from != to) days.Add(changedSource);
         days.Add(target);
@@ -213,16 +249,58 @@ public sealed class WorkspaceSession
     public void DeleteWeight(Guid id) => Commit(Data with { Weight = Data.Weight.Where(w => w.Id != id).ToList() });
     public void DeleteMeasurement(Guid id) => Commit(Data with { Measurements = Data.Measurements.Where(m => m.Id != id).ToList() });
 
-    public void Replace(Workspace data) => Commit(data);
+    public void Replace(Workspace data) => Commit(data, refreshActivities: true);
     public void Export(string path) => repository.Export(Data, path);
-    public void Import(string path) => Commit(repository.Import(path));
+    public void Import(string path) => Replace(repository.Import(path));
 
-    private void Commit(Workspace data)
+    private void Commit(Workspace data, bool refreshActivities = false)
     {
+        if (refreshActivities || Data.Weight != data.Weight || Data.Profile.HeightCm != data.Profile.HeightCm || Data.Profile.StepsCaloriesPer1000 != data.Profile.StepsCaloriesPer1000)
+            data = FillActivityEstimates(data);
         data = ActivityIndex.FreezeGoals(data);
         // Save first: a failed write never reports a successful in-memory change.
         repository.Save(data);
         Data = data;
         Changed?.Invoke();
+    }
+
+    private static Workspace FillActivityEstimates(Workspace data)
+    {
+        var days = data.Days.ToList();
+        for (int i = 0; i < days.Count; i++)
+        {
+            var day = days[i];
+            if (day.Activities.Count == 0) continue;
+            var activities = day.Activities.Select(entry =>
+            {
+                if (entry.Kind == ActivityKind.Steps && (entry.StepCaloriesPer1000 is null || entry.EstimatedCalories is null))
+                {
+                    var rate = entry.StepCaloriesPer1000 ?? RecoverStepRate(data, day, entry);
+                    return entry with { StepCaloriesPer1000 = rate, EstimatedCalories = SmartTargets.StepCalories(entry.Steps, rate) };
+                }
+                if (entry.Kind == ActivityKind.Workout && entry.EstimatedCalories is null && entry.WorkoutMet is { } met)
+                    return entry with { EstimatedCalories = SmartTargets.WorkoutCalories(SmartTargets.ActivityWeightAt(data, day.Date), met, entry.Minutes) };
+                return entry;
+            }).ToList();
+            if (!day.Activities.SequenceEqual(activities)) days[i] = day with { Activities = activities };
+        }
+        return data.Days.SequenceEqual(days) ? data : data with { Days = days };
+    }
+
+    private static decimal? RecoverStepRate(Workspace data, DiaryDay day, ActivityEntry entry)
+    {
+        var frozenRate = day.ActivityGoal?.StepPointsPer1000;
+        var rate = data.Profile.StepsCaloriesPer1000 ?? frozenRate ?? SmartTargets.StepRate(data, day.Date);
+        // Older entries stored rounded kcal for the steps above 2,000 without the original rate.
+        var counted = entry.Steps - 2000;
+        if (entry.EstimatedCalories is not { } saved || saved <= 0 || entry.Steps == 0) return rate;
+        // An older client can also re-save a corrected total while dropping the optional rate.
+        decimal ImpliedRate(int steps) => Math.Min(saved, steps * 300m / 1000) * 1000 / steps;
+        if (counted <= 0) return ImpliedRate(entry.Steps);
+        bool Matches(decimal? candidate) => candidate is { } value &&
+            (Math.Round(counted * value / 1000) == saved || SmartTargets.StepCalories(entry.Steps, value) == saved);
+        if (Matches(rate)) return rate;
+        if (Matches(frozenRate)) return frozenRate;
+        return Math.Round(ImpliedRate(counted), 1);
     }
 }

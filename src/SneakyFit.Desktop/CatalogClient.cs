@@ -27,7 +27,7 @@ internal sealed class CatalogClient(Guid profileId)
             DateTime.UtcNow >= certificate.NotBefore.ToUniversalTime() && DateTime.UtcNow <= certificate.NotAfter.ToUniversalTime() &&
             CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin);
         var client = new HttpClient(handler) { BaseAddress = Endpoint, Timeout = Timeout.InfiniteTimeSpan };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("SneakyFit/1.2.0 (Windows desktop)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("SneakyFit/1.2.1 (Windows desktop)");
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return client;
     }

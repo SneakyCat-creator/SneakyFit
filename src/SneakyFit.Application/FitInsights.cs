@@ -50,8 +50,7 @@ public static class FitInsights
     }
 
     public static bool IsFoodComplete(DiaryDay day) => day.Meals.Count > 0
-        && day.Meals.All(meal => meal.Entries.Any(entry => entry.Kind == EntryKind.Eaten)
-            && meal.Entries.All(entry => entry.Kind == EntryKind.Eaten));
+        && day.Meals.All(meal => meal.IsSkipped || meal.Entries.Count > 0 && meal.Entries.All(entry => entry.Kind == EntryKind.Eaten));
 
     private static DateOnly? LastEligibleDay(DateOnly today, Func<DateOnly, bool> eligible)
     {

@@ -57,18 +57,18 @@ public static class ProgressShare
             }
             else if (kind == ProgressShareKind.Activity)
             {
-                var recorded = days.Where(d => d.Activities.Count > 0).ToArray();
+                var recorded = days.Where(d => d.RecordedActivities.Any()).ToArray();
                 if (recorded.Length == 0) details.Add("Пока нет записей об активности за этот период.");
                 else
                 {
-                    var stepDays = recorded.Where(d => d.Activities.Any(a => a.Kind == ActivityKind.Steps)).ToArray();
+                    var stepDays = recorded.Where(d => d.RecordedActivities.Any(a => a.Kind == ActivityKind.Steps)).ToArray();
                     if (stepDays.Length > 0)
                     {
-                        var steps = stepDays.Sum(d => d.Activities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => (long)a.Steps));
+                        var steps = stepDays.Sum(d => d.RecordedActivities.Where(a => a.Kind == ActivityKind.Steps).Sum(a => (long)a.Steps));
                         details.Add("Шаги: " + Number(steps, "N0") + " за " + Days(stepDays.Length) + " с записями.");
                         details.Add("В среднем за эти дни: " + Number((decimal)steps / stepDays.Length, "N0") + " шагов.");
                     }
-                    var workouts = recorded.SelectMany(d => d.Activities).Where(a => a.Kind == ActivityKind.Workout).ToArray();
+                    var workouts = recorded.SelectMany(d => d.RecordedActivities).Where(a => a.Kind == ActivityKind.Workout).ToArray();
                     if (workouts.Length > 0) details.Add("Тренировки: " + workouts.Length + " · " + Number(workouts.Sum(a => a.Minutes), "0.#") + " мин.");
                     var indexes = recorded.Select(d => ActivityIndex.ForDay(workspace, d)).OfType<DailyActivityIndex>().ToArray();
                     if (indexes.Length > 0) details.Add("Средний индекс активности: " + Number((decimal)indexes.Average(a => a.Percent), "0") + "%.");

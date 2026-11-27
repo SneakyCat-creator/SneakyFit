@@ -9,8 +9,23 @@
       <Grid.RowDefinitions><RowDefinition Height="44"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <Grid><Border Background="#F5F3FC" Margin="0,0,141,0"/><Border Background="#F5F3FC" Height="10" VerticalAlignment="Bottom"/></Grid>
       <Grid Grid.Row="1" Background="#F5F3FC">
-        <ScrollViewer x:Name="PageScroll"><ContentControl x:Name="PageHost" Margin="26,12,26,20" MaxWidth="1520" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/></ScrollViewer>
-        <Border x:Name="Toast" Visibility="Collapsed" VerticalAlignment="Bottom" HorizontalAlignment="Center" Background="#302641" CornerRadius="18" Padding="24,14" Margin="20" Panel.ZIndex="15"><TextBlock x:Name="ToastText" Foreground="White" FontSize="{StaticResource BodyFontSize}"/></Border>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Border x:Name="UpdateBanner" Visibility="Collapsed" Background="#EEE7FB" BorderBrush="#D8CAEF" BorderThickness="1" CornerRadius="17" Padding="16,10" Margin="26,4,26,0" MaxWidth="1520">
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Margin="0,0,18,0">
+              <TextBlock x:Name="UpdateTitle" FontSize="{StaticResource HeadingFontSize}" FontWeight="SemiBold" Foreground="#392553" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+              <ScrollViewer x:Name="UpdateNotesScroll" MaxHeight="76" Margin="0,3,0,0" Focusable="False"><TextBlock x:Name="UpdateNotes" TextWrapping="Wrap" Foreground="#5B4C70" FontSize="{StaticResource BodyFontSize}"/></ScrollViewer>
+              <TextBlock x:Name="UpdateStatus" Visibility="Collapsed" TextWrapping="Wrap" Margin="0,4,0,0" FontSize="{StaticResource BodyFontSize}"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+              <Button x:Name="UpdateAccept" Content="Обновить" Click="AcceptUpdate" Background="#7B4AD8" Foreground="White" MinWidth="94" Margin="0,0,8,0"/>
+              <Button x:Name="UpdateSecondary" Content="Отклонить" Click="DeclineOrCancelUpdate" Background="#FBF9FF" Foreground="#594571" MinWidth="94"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+        <ScrollViewer x:Name="PageScroll" Grid.Row="1"><ContentControl x:Name="PageHost" Margin="26,12,26,20" MaxWidth="1520" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/></ScrollViewer>
+        <Border x:Name="Toast" Grid.Row="1" Visibility="Collapsed" VerticalAlignment="Bottom" HorizontalAlignment="Center" Background="#302641" CornerRadius="18" Padding="24,14" Margin="20" Panel.ZIndex="15"><TextBlock x:Name="ToastText" Foreground="White" FontSize="{StaticResource BodyFontSize}"/></Border>
       </Grid>
     </Grid>
   </Border>

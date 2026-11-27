@@ -100,10 +100,14 @@ public partial class MainWindow : Window
         SettingsGlyph.Text = _page == "profile" ? "\uE72B" : "\uE712";
         var label = _page == "profile" ? "Вернуться в дневник" : "Меню";
         System.Windows.Automation.AutomationProperties.SetName(SettingsButton, label);
-        PageScroll.VerticalScrollBarVisibility = _page == "diary" ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+        if (_page != "profile") _refreshUpdateSettings = null;
+        UpdatePageScrolling();
         PageHost.Margin = _page == "diary" ? new Thickness(26, 12, 26, 20) : new Thickness(30, 12, 30, 85);
         PageHost.Content = _page == "profile" ? ProfilePage() : DiaryPage();
     }
+    private void UpdatePageScrolling() => PageScroll.VerticalScrollBarVisibility = _page == "diary" && UpdateBanner.Visibility != Visibility.Visible
+        ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+
     private void HandleWindowKey(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape)

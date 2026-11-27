@@ -39,10 +39,12 @@ public partial class App : System.Windows.Application
             var repository = new JsonWorkspaceRepository(paths);
             var data = repository.Load();
             if (data is null) { data = WorkspaceFactory.Create(); repository.Save(data); }
-            MainWindow = new MainWindow(new WorkspaceSession(repository, data), paths);
-            _instance.Listen(MainWindow);
-            UpdateBootstrap.ObserveStartup(MainWindow, e.Args);
-            MainWindow.Show();
+            var window = new MainWindow(new WorkspaceSession(repository, data), paths);
+            MainWindow = window;
+            _instance.Listen(window);
+            UpdateBootstrap.ObserveStartup(window, e.Args);
+            window.Show();
+            _ = window.CheckForUpdateOnStartup();
         }
         catch (Exception error)
         {

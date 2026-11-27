@@ -211,22 +211,37 @@ public partial class MainWindow
         if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == "https" && (uri.Host == "openfoodfacts.org" || uri.Host.EndsWith(".openfoodfacts.org", StringComparison.OrdinalIgnoreCase)))
             Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
     }
-    private void NewSharedFoodDrawer(DateOnly? date = null, Guid? mealId = null, bool planned = false) =>
-        ProductDrawer(new CatalogProduct { Source = "community", Basis = "100g" }, date: date, mealId: mealId, planned: planned, create: true);
-    private void OnlineBarcodeDrawer(Action<CatalogProduct, Food?>? selected = null)
+    private void NewSharedFoodDrawer(DateOnly? date = null, Guid? mealId = null, bool planned = false, string? barcode = null) =>
+        ProductDrawer(new CatalogProduct { Source = "community", Basis = "100g", Barcode = barcode }, date: date, mealId: mealId, planned: planned, create: true);
+    private void OnlineBarcodeDrawer(DateOnly? date = null, Guid? mealId = null, bool planned = false)
     {
         var profileId = _session.Data.Profile.Id; var lifetime = new CancellationTokenSource();
-        selected ??= (product, food) => ProductDrawer(product, food);
         var client = new CatalogClient(profileId);
         var code = Input(); code.MaxLength = 14; var preview = new ContentControl(); var status = T("", BodySize, Muted);
+        var create = Btn("Добавить по этикетке", () => NewSharedFoodDrawer(date, mealId, planned, code.Text.Trim()));
+        create.Visibility = Visibility.Collapsed;
+        code.TextChanged += (_, _) => { create.Visibility = Visibility.Collapsed; status.Text = ""; DrawerError.Text = ""; };
         async Task Lookup()
         {
             var barcode = code.Text.Trim();
             if (barcode.Length is < 8 or > 14 || barcode.Any(c => c is < '0' or > '9')) throw new ArgumentException("Введите штрихкод из 8–14 цифр.");
             EnsureCatalogProfile(profileId);
-            var product = await client.Barcode(barcode, lifetime.Token);
+            if (_session.Data.Foods.FirstOrDefault(f => f.Barcode == barcode) is { } saved)
+            {
+                ProductDrawer(saved, date, mealId, planned); return;
+            }
+            CatalogProduct product;
+            try { product = await client.Barcode(barcode, lifetime.Token); }
+            catch (CatalogRequestException error) when (error.Status == 404)
+            {
+                EnsureCatalogProfile(profileId); lifetime.Token.ThrowIfCancellationRequested();
+                if (code.Text.Trim() != barcode) return;
+                status.Text = "Этого штрихкода пока нет в каталоге.";
+                create.Visibility = Visibility.Visible; return;
+            }
             EnsureCatalogProfile(profileId); lifetime.Token.ThrowIfCancellationRequested();
-            await ChooseCatalogProduct(product, selected, lifetime.Token);
+            if (code.Text.Trim() == barcode)
+                await ChooseCatalogProduct(product, (p, f) => { if (code.Text.Trim() == barcode) ProductDrawer(p, f, date, mealId, planned); }, lifetime.Token);
         }
         var find = CatalogAction("Найти продукт", Lookup, true);
         code.KeyDown += (_, e) => { if (e.Key == Key.Enter) { find.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); e.Handled = true; } };
@@ -243,7 +258,7 @@ public partial class MainWindow
             if (found is null) { status.Text = "Штрихкод не виден. Попробуйте фото ближе или введите цифры."; return; }
             code.Text = found; status.Text = "Штрихкод найден"; await Lookup();
         });
-        Drawer("По штрихкоду", S(Field("Штрихкод", code), photo, M(preview, top: 16, bottom: 10), status), find);
+        Drawer("По штрихкоду", S(Field("Штрихкод", code), photo, M(preview, top: 16, bottom: 10), status, create), find);
         _releaseDrawer = lifetime.Cancel;
     }
     private static BitmapSource LoadBarcodePhoto(string path)

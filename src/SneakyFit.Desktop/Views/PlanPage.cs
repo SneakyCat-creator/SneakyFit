@@ -35,15 +35,16 @@ public partial class MainWindow
             {
                 var meal = day.Meals[n]; string[] colors = ["#FFF0CF", "#FFE5DC", "#DEF3EB", "#E8E0FC"];
                 var entries = S(Between(T(meal.Name, SubheadingSize, Ink, true), T(meal.Time.ToString("HH:mm"), CaptionSize, "#65546F")));
-                foreach (var entry in meal.Entries)
+                if (meal.IsSkipped) entries.Children.Add(M(T("Приём пропущен", BodySize, "#65546F"), top: 9));
+                foreach (var entry in meal.ActiveEntries)
                 {
                     var food = new Food(entry.Food.SourceFoodId, entry.Food.Name, "", entry.Food.Per100) { Unit = entry.Food.Unit, GramsPerMillilitre = entry.Food.GramsPerMillilitre };
                     var row = S(T(entry.Food.Name, BodySize, Ink, true), M(T(N(entry.Grams, "0.##") + " " + FoodUnits.Symbol(entry.Food.Unit) + " · " + N(entry.Nutrition.Calories) + " ккал" + (entry.Kind == EntryKind.Planned ? " · план" : " · съедено"), CaptionSize, "#65546F"), top: 4));
                     var label = Surface(Between(row, Round("×", () => Safe(() => _session.RemoveEntry(date, entry.Id)), "#00FFFFFF", "#A08AA7")), "#A0FFFFFF", 11, 13);
                     if (entry.Kind == EntryKind.Planned) MakeDraggable(label, new PlanDrag(date, entry.Id, food, entry.Grams)); entries.Children.Add(M(label, top: 9));
                 }
-                if (date <= today && meal.Entries.Any(e => e.Kind == EntryKind.Planned)) entries.Children.Add(M(Btn("✓  Съедено", () => Safe(() => _session.EatPlannedMeal(date, meal.TemplateId)), "#D1ECD9", "#398568"), top: 10));
-                var add = Btn("+  Добавить", () => FoodDrawer(meal.TemplateId, date, date > today), "#80FFFFFF"); add.Padding = ControlPadding; add.FontSize = BodySize; entries.Children.Add(M(add, top: 11));
+                if (date <= today && meal.ActiveEntries.Any(e => e.Kind == EntryKind.Planned)) entries.Children.Add(M(Btn("✓  Съедено", () => Safe(() => _session.EatPlannedMeal(date, meal.TemplateId)), "#D1ECD9", "#398568"), top: 10));
+                var add = MealAction(date, meal, "#80FFFFFF"); add.Padding = ControlPadding; add.FontSize = BodySize; entries.Children.Add(M(add, top: 11));
                 var tile = Surface(entries, colors[n % 4], 15, 20); AllowMealDrop(tile, date, meal.TemplateId);
                 tile.Cursor = Cursors.Hand;
                 tile.MouseLeftButtonUp += (_, e) => { if (!IsInsideButton(e.OriginalSource as DependencyObject)) MealDrawer(date, meal.TemplateId); };
@@ -78,7 +79,7 @@ public partial class MainWindow
         {
             preview.Children.Clear();
             if (source.SelectedDate is not { } date) return;
-            foreach (var meal in _session.Day(DateOnly.FromDateTime(date)).Meals.Where(m => m.Entries.Count > 0))
+            foreach (var meal in _session.Day(DateOnly.FromDateTime(date)).Meals.Where(m => m.ActiveEntries.Any()))
                 preview.Children.Add(M(S(T(meal.Name, SubheadingSize, Ink, true), M(T(string.Join(" · ", meal.Entries.Select(e => e.Food.Name)), BodySize, Muted), top: 5)), bottom: 18));
         }
         source.SelectedDateChanged += (_, _) => Preview(); Preview();

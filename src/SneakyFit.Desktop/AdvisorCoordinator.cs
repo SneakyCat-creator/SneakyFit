@@ -56,14 +56,18 @@ public partial class MainWindow
             reviewDay = true;
         }
         var preferences = profile.Advisor ?? new();
-        _adviceTasks.RemoveAll(t => preferences.DisabledRules.Contains(t.Rule) || _dismissedAdvice.Contains(t.Id) || !AdviceTargetExists(t));
+        _adviceTasks.RemoveAll(t => preferences.DisabledRules.Contains(t.Rule) || _dismissedAdvice.Contains(t.Id) || !IsAdviceApplicable(t));
         var evaluated = FitAdvisor.Evaluate(_session.Data, now, reviewDay);
         var missing = evaluated.Where(t => !_dismissedAdvice.Contains(t.Id)).ToList();
         var added = missing.Where(t => _adviceTasks.All(previous => previous.Id != t.Id)).ToList();
         _adviceTasks.AddRange(added);
         var state = _adviceTasks.Select(task => (task, FitAdvisor.IsSatisfied(task, _session.Data, now))).ToList();
         var pending = state.Any(item => !item.Item2);
-        if (_advisorCelebrating && !pending && !reviewDay) return;
+        if (_advisorCelebrating && !pending && !reviewDay)
+        {
+            Companion.UpdateChecklist(state);
+            return;
+        }
         _advisorCelebrating = false;
 
         var insights = FitInsights.Evaluate(_session.Data, now);
@@ -94,13 +98,13 @@ public partial class MainWindow
             Companion.ShowInsight(next);
         }
     }
-    private bool AdviceTargetExists(AdviceTask task)
+    private bool IsAdviceApplicable(AdviceTask task)
     {
         if (task.Action != AdviceAction.Meal) return true;
         var date = task.Date ?? DateOnly.FromDateTime(DateTime.Now);
         var day = _session.Data.Days.FirstOrDefault(d => d.Date == date);
         return day is { Meals.Count: > 0 }
-            ? day.Meals.Any(meal => meal.TemplateId == task.MealId)
+            ? day.Meals.Any(meal => meal.TemplateId == task.MealId && !meal.IsSkipped)
             : _session.Data.Profile.MealTemplates.Any(meal => meal.Id == task.MealId);
     }
     private void RememberInsight(FitInsight insight)
@@ -123,7 +127,7 @@ public partial class MainWindow
     {
         Safe(() =>
         {
-            if (!CloseDrawer()) return;
+            if (!IsAdviceApplicable(task) || !CloseDrawer()) return;
             switch (task.Action)
             {
                 case AdviceAction.Profile: _menuTab = "Настройки"; Navigate("profile"); break;
@@ -132,13 +136,12 @@ public partial class MainWindow
                     _measurementKey = task.MeasurementKey ?? "waist"; _measurementSide = task.Side; MeasurementDrawer(true); break;
                 case AdviceAction.Meal:
                     var date = task.Date ?? DateOnly.FromDateTime(DateTime.Now); SelectDiaryDate(date); if (_page != "diary") Navigate("diary");
-                    if (task.MealId is { } id && AdviceTargetExists(task)) MealDrawer(date, id); break;
+                    if (task.MealId is { } id) MealDrawer(date, id); break;
                 case AdviceAction.Movement:
                     SelectDiaryDate(task.Date ?? DateOnly.FromDateTime(DateTime.Now));
                     if (_page != "diary") Navigate("diary");
                     ActivityDrawer(); break;
             }
-            Companion.Collapse();
         });
     }
     private UIElement AdvisorSettings()
